@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none">
-  <!-- Background: Rounded White Square touching edges -->
-  <rect x="0" y="0" width="100" height="100" rx="20" fill="white" />
+  <!-- Background: Rounded Gray Square touching edges -->
+  <rect x="0" y="0" width="100" height="100" rx="20" fill="#f0f0f0" />
   
   <!-- Icon Content (Scaled down and centered) -->
   <g transform="translate(2.5, 2.5) scale(0.95)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
