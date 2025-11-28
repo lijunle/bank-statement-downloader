@@ -37,5 +37,5 @@ jobs:
       - name: Upload extension artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bank-statement-extension
+          name: bank-statement-downloader
           path: dist/*.zip
