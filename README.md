@@ -1,5 +1,6 @@
 # Bank Statement Downloader
 
+[![Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-Bank%20Statement%20Downloader-blue.svg)](https://chromewebstore.google.com/detail/bank-statement-extension/bfkhabnehallgnocdmembehakknegebb)
 [![CI](https://github.com/lijunle/bank-statement-downloader/actions/workflows/ci.yml/badge.svg)](https://github.com/lijunle/bank-statement-downloader/actions/workflows/ci.yml)
 
 ## What is this for?
