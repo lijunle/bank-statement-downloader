@@ -1,0 +1,11 @@
+{
+    "chat.tools.terminal.enableAutoApprove": true,
+    "chat.tools.terminal.autoApprove": {
+        "/^node bin/convert-har\\.mjs analyze/(.+)\\.network$ analyze/(.+)\\.har$/": true,
+        "/^node bin/filter-network\\.mjs (.+) analyze/(.+).network$/": true,
+        "/^node (--test)? tests/(.+)\\.test\\.mjs$/": true,
+        "npm install": true,
+        "npm run check": true,
+        "npm run test": true
+    },
+}

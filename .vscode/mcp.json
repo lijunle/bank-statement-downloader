@@ -1,0 +1,16 @@
+{
+    "servers": {
+        "playwright": {
+            "type": "stdio",
+            "command": "npx",
+            "args": [
+                "@playwright/mcp@latest",
+                "--save-trace",
+                "--init-script",
+                ".vscode/playwright-mcp.init.mjs",
+                "--config",
+                ".vscode/playwright-mcp.config.json"
+            ]
+        }
+    }
+}

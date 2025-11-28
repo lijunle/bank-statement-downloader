@@ -1,0 +1,246 @@
+{
+    "manifest_version": 3,
+    "name": "Bank Statement Downloader",
+    "version": "0.0.0",
+    "description": "Browser extension to easily download bank statements",
+    "permissions": [
+        "activeTab",
+        "storage",
+        "tabs"
+    ],
+    "host_permissions": [
+        "*://*.s3.ca-central-1.amazonaws.com/*",
+        "*://*.s3.amazonaws.com/*"
+    ],
+    "icons": {
+        "128": "extension/icon.png"
+    },
+    "action": {
+        "default_popup": "extension/popup.html",
+        "default_icon": "extension/icon.png"
+    },
+    "background": {
+        "service_worker": "extension/background.mjs",
+        "type": "module"
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "*://*.americanexpress.com/*",
+                "*://*.bankofamerica.com/*",
+                "*://*.bmo.com/*",
+                "*://*.chase.com/*",
+                "*://*.chime.com/*",
+                "*://*.citi.com/*",
+                "*://*.discover.com/*",
+                "*://*.eqbank.ca/*",
+                "*://*.fidelity.com/*",
+                "*://*.firsttechfed.com/*",
+                "*://*.us.hsbc.com/*",
+                "*://*.mbna.ca/*",
+                "*://*.paypal.com/*",
+                "*://*.questrade.com/*",
+                "*://*.simplii.com/*",
+                "*://*.sofi.com/*",
+                "*://*.tangerine.ca/*",
+                "*://*.td.com/*",
+                "*://webbroker.td.com/*",
+                "*://*.usbank.com/*",
+                "*://*.vmd.ca/*",
+                "*://*.wealthsimple.com/*",
+                "*://*.wise.com/*"
+            ],
+            "js": [
+                "extension/content.mjs"
+            ],
+            "run_at": "document_idle",
+            "type": "module"
+        }
+    ],
+    "web_accessible_resources": [
+        {
+            "resources": [
+                "bank/american_express.mjs"
+            ],
+            "matches": [
+                "*://*.americanexpress.com/*"
+            ]
+        },
+        {
+            "resources": [
+                "bank/bank_of_america.mjs"
+            ],
+            "matches": [
+                "*://*.bankofamerica.com/*"
+            ]
+        },
+        {
+            "resources": [
+                "bank/bmo.mjs"
+            ],
+            "matches": [
+                "*://*.bmo.com/*"
+            ]
+        },
+        {
+            "resources": [
+                "bank/chase.mjs"
+            ],
+            "matches": [
+                "*://*.chase.com/*"
+            ]
+        },
+        {
+            "resources": [
+                "bank/chime.mjs"
+            ],
+            "matches": [
+                "*://*.chime.com/*"
+            ]
+        },
+        {
+            "resources": [
+                "bank/citi.mjs"
+            ],
+            "matches": [
+                "*://*.citi.com/*"
+            ]
+        },
+        {
+            "resources": [
+                "bank/discover.mjs"
+            ],
+            "matches": [
+                "*://*.discover.com/*"
+            ]
+        },
+        {
+            "resources": [
+                "bank/eq_bank.mjs"
+            ],
+            "matches": [
+                "*://*.eqbank.ca/*"
+            ]
+        },
+        {
+            "resources": [
+                "bank/fidelity.mjs"
+            ],
+            "matches": [
+                "*://*.fidelity.com/*"
+            ]
+        },
+        {
+            "resources": [
+                "bank/first_tech_fcu.mjs"
+            ],
+            "matches": [
+                "*://*.firsttechfed.com/*"
+            ]
+        },
+        {
+            "resources": [
+                "bank/hsbc_us.mjs"
+            ],
+            "matches": [
+                "*://*.us.hsbc.com/*"
+            ]
+        },
+        {
+            "resources": [
+                "bank/mbna_ca.mjs"
+            ],
+            "matches": [
+                "*://*.mbna.ca/*"
+            ]
+        },
+        {
+            "resources": [
+                "bank/paypal.mjs"
+            ],
+            "matches": [
+                "*://*.paypal.com/*"
+            ]
+        },
+        {
+            "resources": [
+                "bank/questrade.mjs"
+            ],
+            "matches": [
+                "*://*.questrade.com/*"
+            ]
+        },
+        {
+            "resources": [
+                "bank/simplii.mjs"
+            ],
+            "matches": [
+                "*://*.simplii.com/*"
+            ]
+        },
+        {
+            "resources": [
+                "bank/sofi.mjs"
+            ],
+            "matches": [
+                "*://*.sofi.com/*"
+            ]
+        },
+        {
+            "resources": [
+                "bank/tangerine.mjs"
+            ],
+            "matches": [
+                "*://*.tangerine.ca/*"
+            ]
+        },
+        {
+            "resources": [
+                "bank/td_bank.mjs"
+            ],
+            "matches": [
+                "*://*.td.com/*"
+            ]
+        },
+        {
+            "resources": [
+                "bank/td_broker.mjs"
+            ],
+            "matches": [
+                "*://webbroker.td.com/*"
+            ]
+        },
+        {
+            "resources": [
+                "bank/us_bank.mjs"
+            ],
+            "matches": [
+                "*://*.usbank.com/*"
+            ]
+        },
+        {
+            "resources": [
+                "bank/disnat.mjs"
+            ],
+            "matches": [
+                "*://*.vmd.ca/*"
+            ]
+        },
+        {
+            "resources": [
+                "bank/wealthsimple.mjs"
+            ],
+            "matches": [
+                "*://*.wealthsimple.com/*"
+            ]
+        },
+        {
+            "resources": [
+                "bank/wise.mjs"
+            ],
+            "matches": [
+                "*://*.wise.com/*"
+            ]
+        }
+    ]
+}
