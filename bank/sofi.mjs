@@ -23,7 +23,7 @@ export function getSessionId() {
     // Try multiple possible session identifiers
     const sofiToken = getCookie('SOFI');
     const csrfToken = getCookie('SOFI_R_CSRF_TOKEN');
-    const sessionId = getCookie('ab.storage.sessionId.55c370dd-bb3f-475c-8a54-50403ffea8cc');
+    const sessionId = getCookie('ab.storage.sessionId.66d481ee-cc4g-586d-9b65-61514ggfb9dd');
 
     // The SOFI cookie might not be accessible due to HttpOnly or domain restrictions
     // We'll use CSRF token as a fallback identifier, but actual auth happens via HttpOnly cookies

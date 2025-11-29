@@ -8,10 +8,18 @@ Scan the provided file for any personal information and replace it with fake dat
 - Birthday. Replace with "January 1, 1990"
 - Email. Replace with "john.doe@example.com"
 - Address. Replace with "123 Main St, Anytown, USA" or similar format
-- Phone number. Replace with "(123) 456-7890"
-- Client ID or number. Replace with "C123456789"
+- Phone number. Replace with "1234567890"
 - Social Security Number (SSN) or equivalent. Replace with "123-45-6789"
-- Account numbers, keys, and tokens. Replace each digit with a random digit and each letter with a random letter, preserving length and format
+- Various ID and token. Replace each digit with a random digit and each letter with a random letter, preserving length and format
+  - Account ID
+  - Account number
+  - Account mask
+  - Account key
+  - Account token
+  - Client ID
+  - Device ID
+  - Device token
+  - MFA token
 
 Ensure that the replacements maintain the original formatting and structure of the codebase.
 
