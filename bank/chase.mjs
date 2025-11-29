@@ -338,7 +338,7 @@ export async function getProfile(sessionId) {
 
         // Check for greeting name in the direct response
         if (data.greetingName) {
-            // Convert greeting name to title case (e.g., "JUNLE" -> "Junle")
+            // Convert greeting name to title case (e.g., "JOHN" -> "John")
             profileName = data.greetingName.charAt(0).toUpperCase() +
                 data.greetingName.slice(1).toLowerCase();
         }
