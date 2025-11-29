@@ -2,7 +2,7 @@
 agent: agent
 ---
 
-Scan the provided file for any personal information and replace it with fake data.
+Scan the provided file for any personal information and scrub it with fake data.
 
 - User name. Replace with "John Doe"
 - Birthday. Replace with "January 1, 1990"
