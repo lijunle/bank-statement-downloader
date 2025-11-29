@@ -92,3 +92,5 @@ tramp
 
 # Playwright MCP files
 .playwright-mcp/
+*.network
+*.har
