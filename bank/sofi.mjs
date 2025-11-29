@@ -23,17 +23,32 @@ export function getSessionId() {
     // Try multiple possible session identifiers
     const sofiToken = getCookie('SOFI');
     const csrfToken = getCookie('SOFI_R_CSRF_TOKEN');
-    const sessionId = getCookie('ab.storage.sessionId.66d481ee-cc4g-586d-9b65-61514ggfb9dd');
+    const sessionStorageCookie = getSessionStorageCookie();
 
     // The SOFI cookie might not be accessible due to HttpOnly or domain restrictions
     // We'll use CSRF token as a fallback identifier, but actual auth happens via HttpOnly cookies
-    const identifier = sofiToken || csrfToken || sessionId || 'session';
+    const identifier = sofiToken || csrfToken || sessionStorageCookie || 'session';
 
     console.log('[SoFi] Session identifier:', identifier === 'session' ? 'Using default (HttpOnly cookies)' : `Found (${identifier.length} chars)`);
 
     // Return an identifier - the actual authentication happens via HttpOnly cookies
     // that are automatically sent with fetch requests using credentials: 'include'
     return identifier;
+}
+
+/**
+ * Get session ID from ab.storage.sessionId.* cookie pattern
+ * @returns {string | null} Session ID or null if not found
+ */
+function getSessionStorageCookie() {
+    const cookies = document.cookie.split(';');
+    for (const cookie of cookies) {
+        const [cookieName, cookieValue] = cookie.trim().split('=');
+        if (cookieName && cookieName.startsWith('ab.storage.sessionId.')) {
+            return decodeURIComponent(cookieValue);
+        }
+    }
+    return null;
 }
 
 /**
