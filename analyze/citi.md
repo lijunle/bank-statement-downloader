@@ -1,5 +1,7 @@
 # Citi Bank Statement API Analysis
 
+**Analysis as of:** 2025-12-03
+
 ## Overview
 
 This document analyzes the Citi bank statement API endpoints and their usage for retrieving user profile information, listing accounts, accessing statements, and downloading statement PDFs.

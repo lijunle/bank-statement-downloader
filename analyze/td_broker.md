@@ -1,12 +1,13 @@
 # TD Direct Investing (WebBroker) API Analysis
 
+**Analysis as of:** 2025-11-25
+
 ## Bank Information
 
 - **Bank ID**: `td_broker`
 - **Bank Name**: TD Direct Investing (WebBroker)
 - **Bank URL**: https://webbroker.td.com/
 - **HAR File**: `analyze/td_broker_1764055743651.har`
-- **Browser Observation Date**: 2025-11-25
 
 ## Session Identification
 

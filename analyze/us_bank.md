@@ -1,5 +1,7 @@
 # US Bank API Analysis
 
+**Analysis as of:** 2025-12-03
+
 ## Bank Information
 
 - **Bank ID**: us_bank

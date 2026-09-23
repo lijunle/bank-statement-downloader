@@ -1,10 +1,11 @@
 # Disnat (Desjardins Online Brokerage) - Network API Analysis
 
+**Analysis as of:** 2025-11-19
+
 **Bank ID**: disnat  
 **Bank Name**: Disnat (Desjardins Courtage en ligne / Desjardins Online Brokerage)  
 **Bank URL**: https://www.disnat.com/  
 **Primary Domain**: https://tmw.secure.vmd.ca/  
-**Analysis Date**: November 19, 2025
 
 ## Session ID
 
@@ -511,7 +512,7 @@ Content-Disposition: inline;filename=8K7NR_ETATCOMPTE_2025-10-31.pdf
 
 ## Implementation Notes
 
-These observations are based on the network trace captured on November 19, 2025.
+These observations are based on the captured network trace.
 
 1. **Portfolio API Response Structure**: The portfolio API returns data directly without `status` and `payload` wrapper fields, unlike the demographics API.
 

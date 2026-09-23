@@ -1,5 +1,7 @@
 # BMO Canada - Bank Statement API Analysis
 
+**Analysis as of:** 2025-12-03
+
 ## Summary
 
 BMO Canada's online banking platform uses a series of JSON-based POST APIs to retrieve account information, statement lists, and download statements. The APIs follow a consistent request/response pattern with headers for authentication and session management.

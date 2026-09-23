@@ -1,12 +1,13 @@
 # Wise Network API Analysis
 
+**Analysis as of:** 2025-11-23
+
 ## Bank Information
 
 - **Bank ID**: wise
 - **Bank Name**: Wise
 - **Bank URL**: https://wise.com
 - **HAR File**: `analyze/wise_1763902814851.har`
-- **Analysis Date**: 2025-11-23
 
 ## Session Management
 

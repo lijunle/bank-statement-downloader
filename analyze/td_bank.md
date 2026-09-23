@@ -1,10 +1,10 @@
 # TD Bank Canada API Analysis
 
+**Analysis as of:** 2025-11-20
+
 **Bank ID:** td_bank  
 **Bank Name:** TD Bank Canada  
 **Bank URL:** https://www.td.com / https://easyweb.td.com  
-**Analysis Date:** November 20, 2025  
-**Last Updated:** November 24, 2025
 
 ## Session ID
 

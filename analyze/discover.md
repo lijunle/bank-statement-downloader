@@ -1,5 +1,7 @@
 # Discover Bank Analysis
 
+**Analysis as of:** 2025-12-03
+
 ## Overview
 
 **Bank ID**: discover

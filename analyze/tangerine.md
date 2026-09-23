@@ -1,8 +1,9 @@
 # Tangerine Bank API Analysis
 
+**Analysis as of:** 2025-11-20
+
 **Bank**: Tangerine Bank  
 **Bank URL**: https://www.tangerine.ca  
-**Analysis Date**: November 20, 2025  
 **HAR File**: `analyze/tangerine_1763673817887.har`
 
 ## Overview

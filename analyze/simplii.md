@@ -1,5 +1,7 @@
 # Simplii Financial - API Analysis Report
 
+**Analysis as of:** 2025-11-20
+
 ## Bank Information
 
 - **Bank ID**: simplii
@@ -8,7 +10,6 @@
 - **Online Banking URL**: https://online.simplii.com
 - **HAR File**: analyze/simplii_1763648550287.har
 - **Network Trace File**: analyze/simplii_1763648550287.network
-- **Trace Date**: November 20, 2025
 
 ## User Profile Information
 

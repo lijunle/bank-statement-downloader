@@ -1,5 +1,7 @@
 # Chase Bank Statement API Analysis
 
+**Analysis as of:** 2025-12-03
+
 ## Overview
 
 This document analyzes the Chase bank APIs used to retrieve user profile information, list accounts, retrieve statements, and download statement PDFs.

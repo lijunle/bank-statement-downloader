@@ -1,9 +1,10 @@
 # Wealthsimple Network API Analysis
 
+**Analysis as of:** 2025-11-23
+
 **Bank ID**: `wealthsimple`
 **Bank Name**: Wealthsimple
 **Bank URL**: https://www.wealthsimple.com / https://my.wealthsimple.com
-**Analysis Date**: November 23, 2025
 **HAR File**: `analyze/wealthsimple_1763899399558.har`
 **Implementation**: `bank/wealthsimple.mjs`
 

@@ -1,14 +1,16 @@
 # Fidelity Investments - Network API Analysis
 
+**Analysis as of:** 2026-09-23
+
 **Bank Information:**
 
 - Bank: Fidelity Investments
 - Website: https://www.fidelity.com / https://digitalservices.fidelity.com
-- Current observations: September 23, 2026, authenticated investment/retirement document flow
-- Historical source: `analyze/fidelity_1763597495016.har`, captured November 19, 2025
+- Current scope: authenticated investment/retirement document flow
+- Historical source: `analyze/fidelity_1763597495016.har`
 - Implementation: `bank/fidelity.mjs`
 
-## Current Document Center (2026-09-23)
+## Current Document Center
 
 The portfolio's Documents link now opens
 `https://digitalservices.fidelity.com/navigate/ent-documentcenter/statements`.
@@ -236,11 +238,11 @@ shapes take precedence over the historical investment examples below.
 
 ---
 
-## Historical capture (2025-11-19)
+## Historical capture
 
 The remaining sections describe the older GraphQL and direct-PDF flow. They are
 retained for provenance and credit-card reference, not as current endpoint guidance.
-Credit-card endpoints below were not exercised in the 2026 observation.
+Credit-card endpoints below were not exercised in the current investigation.
 
 ### API Flow Overview
 
@@ -1029,7 +1031,6 @@ POST https://digital.fidelity.com/ftgw/digital/credit-card/api/graphql
 
 - **Size**: 19.40 MB
 - **Total Entries**: 535 Fidelity domain requests
-- **Captured**: November 19, 2025, 4:22 PM
 
 **APIs present in the capture:**
 

@@ -1,9 +1,10 @@
 # MBNA Canada API Analysis
 
+**Analysis as of:** 2025-11-20
+
 **Bank ID:** mbna_ca  
 **Bank Name:** MBNA Canada  
 **Bank URL:** https://www.mbna.ca  
-**Analysis Date:** November 20, 2025
 
 ## Overview
 
