@@ -8,7 +8,7 @@
  * Creates a zip file containing the browser extension files in the dist/ directory.
  */
 
-import archiver from 'archiver';
+import { ZipArchive } from 'archiver';
 import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -138,7 +138,7 @@ async function pack() {
 
     // Create a file stream for the output
     const output = fs.createWriteStream(outputPath);
-    const archive = archiver('zip', {
+    const archive = new ZipArchive({
         zlib: { level: 9 } // Maximum compression
     });
 
