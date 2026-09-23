@@ -1,5 +1,7 @@
 # First Tech Federal Credit Union - API Analysis
 
+**Analysis as of:** 2025-12-03
+
 **Bank ID:** `first_tech_fcu`  
 **Bank Name:** First Tech Federal Credit Union  
 **Bank URL:** https://banking.firsttechfed.com  

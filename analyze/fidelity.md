@@ -1,11 +1,12 @@
 # Fidelity Investments - Network API Analysis
 
+**Analysis as of:** 2025-11-19
+
 **Bank Information:**
 
 - Bank: Fidelity Investments
 - Website: https://www.fidelity.com / https://digital.fidelity.com
 - HAR File: `analyze/fidelity_1763597495016.har`
-- Captured: November 19, 2025
 - Implementation: `bank/fidelity.mjs`
 
 ## API Flow Overview
@@ -795,7 +796,6 @@ POST https://digital.fidelity.com/ftgw/digital/credit-card/api/graphql
 
 - **Size**: 19.40 MB
 - **Total Entries**: 535 Fidelity domain requests
-- **Captured**: November 19, 2025, 4:22 PM
 
 **APIs present in the capture:**
 

@@ -1,5 +1,7 @@
 # American Express API Analysis
 
+**Analysis as of:** 2025-11-29
+
 This document describes the API endpoints and requirements for accessing American Express account and statement data.
 
 ## Quick Start

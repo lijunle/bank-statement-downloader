@@ -1,5 +1,7 @@
 # Bank of America Statement Retrieval
 
+**Analysis as of:** 2025-12-03
+
 Concise reference for downloading Bank of America statements (checking, savings, credit card) via extension code.
 
 ## Core Findings (Latest)
@@ -289,7 +291,3 @@ Rely on browser-managed cookies (HttpOnly + Secure). No custom header hacks need
 - Refresh via `gatherDocuments` before each download.
 - Download with navigation headers.
 - Validate blob.
-
----
-
-Last updated: aligned with unified download endpoint + pre-download refresh behavior.

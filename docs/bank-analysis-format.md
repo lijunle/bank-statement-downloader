@@ -6,11 +6,37 @@ bank's actual API flow and preserve valid existing analysis when updating it.
 If required information is unknown, record the gap instead of inventing a value.
 This is an API reference, not a test-run report.
 
+## Analysis date
+
+Every report must have exactly one analysis date, directly below its title:
+
+```markdown
+**Analysis as of:** YYYY-MM-DD
+```
+
+Use an ISO 8601 calendar date for the latest substantive investigation based on
+bank website or API evidence. Advance it only when new evidence is incorporated,
+not for editorial, formatting, or code-only changes. It does not mean that every
+account type or API path was revalidated on that date.
+
+For historical reports, prefer an explicit, reliable analysis or observation date;
+otherwise use a capture date that represents the report's evidence. If no reliable
+full date is available, use the author date of the Git commit that first introduced
+the report, following renames. This is a best-effort historical fallback, not a
+confirmed observation date: imported repositories may lack the original history.
+Do not use the latest file modification or commit date as a substitute.
+
+Replace other analysis-time labels such as `Analysis Date`, `Last Updated`,
+`Captured`, `Browser Observation Date`, and `Trace Date`, including dates in section
+headings or observation prose. Keep historical context and evidence references
+without additional analysis dates. Preserve business dates in API examples,
+statement periods, and request parameters.
+
 ## Required information
 
-- **Scope and provenance:** bank identifier, relevant site/API domains, observation
-  date, and account types investigated. Link each observed UI action to the
-  corresponding request method, endpoint, and sanitized response excerpt.
+- **Scope and provenance:** bank identifier, relevant site/API domains, the single
+  `Analysis as of` date, and account types investigated. Link each observed UI action
+  to the corresponding request method, endpoint, and sanitized response excerpt.
 - **Authentication:** how the authenticated page supplies session and CSRF
   material, where those values come from, and observed expiration behavior.
   Describe mechanisms and field names, not live credentials or token values.
@@ -41,8 +67,8 @@ Include these when applicable, without adding empty sections for every possibili
   assumptions. Record the basis for a conclusion so another agent can check it.
 - A header appearing in a request does not establish that it is required.
 - A successful request proves only the exercised path, not all account types.
-- Date observations so readers can distinguish current evidence from historical
-  findings.
+- Distinguish current evidence from historical findings in the prose, without
+  adding separate observation dates.
 - Browser request IDs are useful during inspection but are not durable evidence
   references. Retain the action, method, endpoint, and relevant sanitized structure.
 - When new observations contradict older findings, update the affected conclusion

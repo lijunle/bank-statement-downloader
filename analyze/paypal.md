@@ -1,10 +1,10 @@
 # PayPal Statement API Analysis
 
+**Analysis as of:** 2025-11-20
+
 ## Overview
 
 This document analyzes the PayPal APIs used to retrieve user profile information, list accounts, retrieve statements, and download statement PDFs. PayPal uses a mix of REST APIs and GraphQL endpoints, with some data embedded in server-side rendered HTML. The system supports both PayPal balance account statements and PayPal credit card statements through different API endpoints.
-
-**Browser Observation Date**: November 20, 2025
 
 ## Base URLs
 
