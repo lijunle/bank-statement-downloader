@@ -46,7 +46,7 @@ Bank Statement Downloader is a Chrome/Edge browser extension designed to simplif
 | Wise                                 |      ✅       |     ⚠️ [^4]     |         ✅          |
 
 [^1]: EQ Bank generates statement PDFs client-side. Support is currently under investigation.
-[^2]: Fidelity combines all personal accounts into a single statement PDF file.
+[^2]: Fidelity can combine multiple investment accounts into one statement PDF. Open Fidelity's [Documents page](https://digitalservices.fidelity.com/navigate/ent-documentcenter/statements) to use the extension for investment and retirement statements.
 [^3]: First Tech FCU combines checking and savings accounts into a single statement PDF file.
 [^4]: Wise does not provide pre-generated statements; statements are generated on-demand for each month.
 
