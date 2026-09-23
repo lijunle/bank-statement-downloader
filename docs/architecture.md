@@ -2,13 +2,13 @@
 
 ## Overview
 
-This browser extension enables users to download bank statements from supported financial institutions. The architecture uses a **Background Service Worker** as a persistent coordination layer between the ephemeral popup UI and tab-specific content scripts:
+This browser extension enables users to download bank statements from supported financial institutions. An event-driven **Background Service Worker** coordinates the ephemeral popup UI and tab-specific content scripts. Chrome may stop an idle worker; cached state lives in `chrome.storage.session`, not worker globals:
 
 ```
 ┌─────────────────┐         ┌──────────────────────┐         ┌──────────────────┐
 │                 │         │                      │         │                  │
 │     Popup       │◄────────│  Background Service  │◄────────│  Content Script  │
-│   (Ephemeral)   │────────►│  Worker (Persistent) │────────►│   (Per Tab)      │
+│   (Ephemeral)   │────────►│  Worker (On demand)  │────────►│   (Per Tab)      │
 │                 │         │                      │         │                  │
 └─────────────────┘         └──────────────────────┘         └──────────────────┘
        ▲                              ▲                              ▲
@@ -23,21 +23,21 @@ This browser extension enables users to download bank statements from supported 
 
 ### 1. Background Service Worker (`extension/background.mjs`)
 
-The background service worker is the heart of the extension, providing persistent state and coordination:
+The background service worker routes requests and manages the in-memory session cache, which survives worker suspension:
 
 **Core Responsibilities:**
 
 - **Request routing** - Acts as message broker between popup and content scripts
 - **Cache management** - Maintains `chrome.storage.session` cache with 15-minute TTL
 - **CORS proxy** - Handles cross-origin fetch requests that content scripts cannot make directly
-- **Session persistence** - Preserves state across popup close/reopen cycles
+- **Cache continuity** - Preserves cached data across popup close/reopen cycles and worker suspension, not the bank's authenticated session
 
 **Caching Strategy:**
 
 - Hierarchical cache keys: `cached_{action}_{bankId}_{sessionId}_{accountId?}`
-- Automatic expiration after 15 minutes
+- Entries expire after 15 minutes and are removed when next read
 - Force refresh support via `forceRefresh` flag
-- Cache survives popup lifecycle but clears on browser session end
+- Cache survives popup lifecycle but clears on browser restart or extension reload/disable
 
 **Message Handling:**
 
@@ -64,7 +64,7 @@ The popup provides the user interface for viewing accounts and downloading state
 - Opens when user clicks extension icon
 - Loads cached data instantly from background worker
 - Closes when user clicks away (state preserved in background)
-- No local caching or fetch logic - fully delegates to background worker
+- Bank API retrieval delegates to the background worker; the popup holds transient UI state and converts returned data URLs to download Blobs
 
 **UI Flow:**
 
@@ -101,8 +101,8 @@ Content scripts run in the context of bank web pages and handle bank-specific AP
 
 ### Why Background Service Worker?
 
-- **Persistent state** - Popup is ephemeral and loses all state on close
-- **Cache survival** - Data persists across popup open/close cycles
+- **Coordination** - Worker handles events independently of the popup lifecycle
+- **Cache survival** - `chrome.storage.session` data survives popup close and worker suspension without keeping the worker running
 - **Single source of truth** - Centralized cache management
 - **CORS workaround** - Can proxy fetch requests that content scripts cannot make
 
@@ -202,25 +202,15 @@ Type safety ensures message contracts are consistent across all components.
 
 ## Supported Banks
 
-Each bank has an isolated module in `bank/` directory:
-
-- American Express
-- Bank of America
-- BMO
-- Chase
-- Chime
-- Citi
-- Discover
-- Disnat
-- Fidelity
-- First Tech FCU
-
-Each module exports a standard interface for account and statement retrieval.
+Each bank has an isolated module in `bank/` exporting the shared account and statement
+interface. See the [supported-bank matrix](../README.md#supported-banks) for maintained
+capability coverage.
 
 ## Security Considerations
 
-- **No credential storage** - Extension never stores passwords or sensitive auth data
-- **Session-only cache** - Data clears when browser closes
+- **No password storage** - The extension uses the bank page's existing authenticated session rather than collecting login passwords
+- **Sensitive session cache** - Cache keys and cached profiles can contain session identifiers alongside account and statement data; treat them as sensitive
+- **Session-only cache** - `chrome.storage.session` is in memory and clears on browser restart or extension reload/disable
 - **Same-origin requests** - Content scripts make API calls from bank's domain
 - **No external servers** - All processing happens locally in the browser
 - **Manifest permissions** - Only requests access to specific bank domains

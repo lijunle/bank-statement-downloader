@@ -123,6 +123,13 @@ Distinguish an observed implementation failure from a blocked session that needs
 user intervention. Keep test-run results out of the bank analysis; update it only
 when testing provides new API observations.
 
+When diagnosing an extension failure, inspect both the bank page and the extension
+service worker's console using the browser skill. The `requestFetch` route makes
+requests in the background worker, so they may not appear in the bank tab's network
+list. The pinned CLI's network tools are page-scoped; do not assume they accept
+`--serviceWorkerId`. If worker network details are needed, inspect the worker in
+Chrome DevTools and retain only sanitized findings.
+
 Return to evidence collection if a failure exposes an unknown API behavior.
 Report local test results separately from live-validation results, and do not
 claim broader coverage than was exercised. Remove only task-created temporary

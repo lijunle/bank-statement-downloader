@@ -1,6 +1,6 @@
 ---
 name: chrome-extension-control
-description: Control of unpacked Chrome extensions over the Chrome DevTools Protocol, covering machine setup, launching a visible Chrome instance with automation flags removed, loading the extension into a session, extension-owned pages, toolbar action triggering, extension service worker evaluation, and console and network inspection of extension activity.
+description: Control of unpacked Chrome extensions over the Chrome DevTools Protocol, covering machine setup, launching a visible Chrome instance, loading the extension into a session, extension-owned pages, toolbar action triggering, extension service worker evaluation, and console and network inspection of extension activity.
 ---
 
 # Chrome Extension Control
@@ -11,7 +11,8 @@ Three steps, in order. Each depends on the previous one.
 2. **[Launch the Chrome instance](#2-launch-the-chrome-instance)** — once per working session.
 3. **[Operate the extension](#3-operate-the-extension)** — the actual work.
 
-Paths are relative to the directory containing this `SKILL.md`. Use
+Except for the installation command below, examples run from the directory containing
+this `SKILL.md`, not the repository root. Use
 `./node_modules/.bin/chrome-devtools` in place of the bare `chrome-devtools` in upstream
 examples, or the binary's absolute path from another directory. On Windows, call
 `.\node_modules\.bin\chrome-devtools.cmd` from PowerShell, or use a Bash shell.
@@ -20,24 +21,25 @@ examples, or the binary's absolute path from another directory. On Windows, call
 
 Do this once per machine, with the user's approval.
 
-Google Chrome must be installed. This skill drives the real Chrome installation rather than a
-bundled browser, so that banks see a genuine Chrome build and so that unpacked extensions load
-over the DevTools Protocol.
+Google Chrome and a Node.js version supported by the pinned CLI must be installed.
+This skill uses the installed Chrome to load unpacked extensions over the DevTools Protocol.
 
 Install the pinned CLI, which replaces upstream's global-install instructions and keeps the CLI
-and its bundled documentation on the version in `package.json` and `package-lock.json`:
+and its bundled documentation on the version in the skill's `package.json` and
+`package-lock.json`. Run this command from the repository root:
 
-```sh
-npm install
+```powershell
+npm ci --prefix .\.agents\skills\chrome-extension-control
 ```
 
-Re-run it whenever those manifests change.
+Re-run it whenever those manifests change. For the examples below, switch to the skill
+directory, or use the CLI's absolute path; root dependencies do not provide this CLI.
 
 No separate command creates the browser profile; step 2 creates it on first launch. After that
-first launch, sign in to any site the profile needs while the browser is visible. Cookies and
-sessions persist in the profile directory, so each sign-in is a one-time cost rather than a
-per-run step. Unpacked extensions do not persist this way, which is why loading the extension
-belongs to step 3.
+first launch, sign in to any site the profile needs while the browser is visible. The profile
+can retain cookies, but sessions can expire or require MFA again. Verify authentication each
+working session and ask the user to sign in when needed. Unpacked extensions loaded by this
+tool do not persist this way, which is why loading the extension belongs to step 3.
 
 ## 2. Launch the Chrome instance
 
@@ -52,8 +54,7 @@ Start the daemon explicitly, before any other command:
   --categoryExtensions=true \
   --userDataDir "$HOME/.cache/Google/Chrome/bank-sync" \
   --ignoreDefaultChromeArg=--headless=new \
-  --ignoreDefaultChromeArg=--hide-scrollbars \
-  --ignoreDefaultChromeArg=--enable-automation
+  --ignoreDefaultChromeArg=--hide-scrollbars
 ```
 
 Why each part matters:
@@ -66,7 +67,8 @@ Why each part matters:
   silently drops both `--headless=false` and `--no-headless`, because the server-side default for
   `headless` is `false` while the CLI-side default is `true`, and the serializer skips any value
   equal to the server-side default. Removing Chrome's own argument is the supported path.
-- Removing `--hide-scrollbars` and `--enable-automation` drops two automation fingerprints.
+- Removing `--hide-scrollbars` restores normal scrolling controls in the visible browser.
+  Keep the default `--enable-automation` flag.
 
 A visible browser is mandatory for bank work, which needs sign-in, CAPTCHA, consent, and
 multi-factor prompts.
@@ -98,34 +100,25 @@ path, and exclude `--type=` processes. Chrome's own default arguments contain un
 PowerShell's `-match` is case-insensitive, a plain `\b` would also match a sibling profile such
 as `bank-sync-old`, and every child process inherits the profile path.
 
-### Automation fingerprints
+### Authentication and automation limits
 
 Bank sites run bot detection. Expect commercial bot-management and device-fingerprinting
 services, which read automation signals from the browser.
 
-Removing the flags above does not make the browser indistinguishable. `navigator.webdriver`
-stays `true` because the CDP pipe connection sets it, not `--enable-automation`. Every CDP-based
-tool has this property, so switching tools does not avoid it. Mask it per navigation:
+Visible mode does not make an automated browser indistinguishable from a manually launched
+one. Leave `navigator.webdriver` and other automation signals unchanged; do not inject scripts
+or tune flags to conceal automation. A persistent profile retains browser data, not a guarantee
+of authentication or acceptance by a bank.
 
-```sh
-./node_modules/.bin/chrome-devtools navigate_page <pageId> --url "https://example.com" \
-  --initScript "Object.defineProperty(Navigator.prototype, 'webdriver', { get: () => false, configurable: true });"
-```
-
-`--initScript` runs before page scripts, so it lands ahead of the detection sensor.
-
-Reusing one persistent profile helps more than flag tuning: a stable device fingerprint with real
-sign-in history looks less suspicious than a fresh profile on every run.
-
-Stop at not advertising automation. Do not build further evasion of a bank's fraud controls.
-Downloading your own statements is legitimate; defeating fraud detection is not, and it can get
-the account flagged.
+If a site rejects the automated session, report the workflow as blocked and ask the user to
+take over or choose a supported access method. Do not retry with fingerprint overrides or
+attempt to bypass the bank's fraud controls.
 
 ### Sharing the daemon
 
-Only one daemon runs at a time, and `start` restarts it, replacing a daemon another skill pointed
-at a different browser. Capture the current configuration with `status` before restarting, and
-restore it afterwards when the previous session still matters.
+By default, CLI commands share one daemon, and `start` restarts it, replacing a daemon another
+skill pointed at a different browser. Capture the current configuration with `status` before
+restarting, and restore it afterwards when the previous session still matters.
 
 Chrome refuses to open a profile directory that another Chrome process already has open. Keep
 this profile directory distinct from every other automation or everyday profile on the machine.
@@ -179,9 +172,10 @@ documents the commands themselves, including its `## Extensions` section. Behavi
 
 - Verify the postcondition of each mutation before continuing. A zero exit code is not evidence
   that the extension loaded, reloaded, or reached the expected state.
-- Extension state, storage, and sign-in cookies live in the profile directory. Treat that
-  directory as the user's data: do not copy it into a repository, and do not move it between
-  machines.
+- The profile contains private browser data such as cookies. Treat it as the user's data:
+  do not copy it into a repository or move it between machines. This extension's
+  `chrome.storage.session` cache is in memory and clears on browser restart or extension
+  reload; it is not persisted in the profile directory.
 - Keep credentials, cookies, tokens, and other values read out of a live session out of files and
   out of reports.
 - Ask before uninstalling an extension, clearing a profile, or closing a browser the user did not
