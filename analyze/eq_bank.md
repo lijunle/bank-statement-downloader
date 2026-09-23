@@ -472,8 +472,8 @@ doc.autoTable(columns, data, {
 - ❌ **Precise Positioning**: Pixel-perfect layout requires exact font metrics and spacing
 - ❌ **Version Compatibility**: jsPDF API differences (e.g., `setFontType` vs `setFont`)
 
-**Test Result**:
-When testing with real transaction data, the generated PDF was **visually completely different** from EQ Bank's original PDF, despite using their extracted code structure.
+**Output Fidelity Limitation**:
+The extracted PDF-generation code did not reproduce EQ Bank's original document layout.
 
 #### 4. Available Options
 

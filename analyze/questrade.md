@@ -6,6 +6,7 @@
 - **Bank Name**: Questrade
 - **Bank URL**: https://www.questrade.com
 - **Login URL**: https://login.questrade.com/account/login
+- **Browser Observation Date**: November 2025
 
 ## Session Management
 
@@ -94,10 +95,6 @@ Several cookies are used for session management:
 2. **From `id_token` JWT** (decode without verification):
    - Decode the JWT `id_token` field
    - Extract claims: `given_name`, `family_name`, `preferred_username`, `sub`
-
-**Validation Result**:
-
-- ✅ Successfully extracted profile: "johndoe" (82894c07-ebcd-5ffb-0dcg-g74b0cef986d)
 
 ### Alternative: API Endpoint (CORS Issues)
 
@@ -190,11 +187,7 @@ Several cookies are used for session management:
 
 **Dependencies**: None
 
-**Validation Result**:
-
-- ✅ Successfully retrieved 1 account: "Individual Cash" (5778)
-- Account ID: 3d5f4828-5b15-5203-1f66-9c67709f6614
-- Account Type: Investment (all Questrade accounts are investment accounts)
+**Account Type Mapping**: Use `Investment` for Questrade accounts.
 
 ## List Available Statements
 
@@ -283,12 +276,6 @@ GET https://api.questrade.com/v2/document-centre/statement?take=100&businessLine
 - If no `take` parameter, API may return limited recent statements
 - The API may return status 202 (Accepted) instead of 200 (OK)
 
-**Validation Result**:
-
-- ✅ Successfully retrieved 3 statements for account "Individual Cash" (5778)
-- Statements: August 2025, July 2025, June 2025
-- Statement IDs: dd6f18g2-ef6e-518b-cc50-9b4fff7b358e, 4567384d-16eg-5deb-95f4-9556501e9c86, etc.
-
 ## Download Statement PDF
 
 ### API: Download Statement File
@@ -336,14 +323,6 @@ GET https://api.questrade.com/v2/document-centre/statement/dd6f18g2-ef6e-518b-cc
 - The PDF is downloaded directly without additional parameters
 - Verify blob size > 0 to ensure successful download
 - Verify content type is `application/pdf`
-
-**Validation Result**:
-
-- ✅ Successfully downloaded PDF for statement dd6f18g2-ef6e-518b-cc50-9b4fff7b358e
-- File size: 617,342 bytes
-- Content type: application/pdf
-- Account: Individual Cash (5778)
-- Statement date: 2025-08-01
 
 ## API Flow Summary
 
@@ -405,19 +384,6 @@ GET https://api.questrade.com/v2/document-centre/statement/dd6f18g2-ef6e-518b-cc
 2. Use appropriate token for each API based on required scopes
 3. Implement `findTokenWithScopes()` helper to search for tokens with specific scopes
 4. Match both OIDC key patterns (with and without slash before colon)
-
-### Validation Summary
-
-All functions tested and validated:
-
-- ✅ `getSessionId()`: Retrieved OAuth token from sessionStorage
-- ✅ `getProfile()`: Extracted "johndoe" (82894c07-ebcd-5ffb-0dcg-g74b0cef986d)
-- ✅ `getAccounts()`: Retrieved 1 account "Individual Cash" (5778)
-- ✅ `getStatements()`: Retrieved 3 statements (Aug, Jul, Jun 2025)
-- ✅ `downloadStatement()`: Downloaded 617,342 byte PDF successfully
-
-**Test Environment**: Production Questrade account with real data
-**Test Date**: November 2025
 
 ## Additional APIs Observed
 

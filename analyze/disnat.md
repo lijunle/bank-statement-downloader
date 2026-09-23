@@ -509,33 +509,9 @@ Content-Disposition: inline;filename=8K7NR_ETATCOMPTE_2025-10-31.pdf
 
 ---
 
-## Verification Status
+## Implementation Notes
 
-✅ **Session ID**: Confirmed - JSESSIONID and XSRF-TOKEN cookies in HAR  
-✅ **User Profile API**: Confirmed - demographics endpoint returns user details  
-✅ **Account List API**: Confirmed - portfolio/group endpoint returns accounts with balances  
-✅ **Statement List API**: Confirmed - documents/info/clients returns statement list with tokens  
-✅ **Download PDF API**: Confirmed - documents endpoint with token returns PDF file
-
-All APIs have been verified against the network trace captured on November 19, 2025.
-
----
-
-## Browser Extension Validation
-
-**Validation Date**: November 19, 2025  
-**Test User**: JOHN DOE (8K7NR)  
-**Test Accounts**: 8K7NRA2 (CAD CASH), 8K7NRB0 (USD CASH)
-
-### API Function Tests
-
-✅ **getSessionId()** - Successfully retrieved XSRF-TOKEN cookie  
-✅ **getProfile()** - Retrieved profile with clientCode 8K7NR and name "JOHN DOE"  
-✅ **getAccounts()** - Retrieved 2 accounts (CAD and USD cash accounts)  
-✅ **getStatements()** - Retrieved 5 monthly statements (June-October 2025)  
-✅ **downloadStatement()** - Successfully downloaded PDF statements (144.37 KB)
-
-### Implementation Notes
+These observations are based on the network trace captured on November 19, 2025.
 
 1. **Portfolio API Response Structure**: The portfolio API returns data directly without `status` and `payload` wrapper fields, unlike the demographics API.
 
@@ -544,5 +520,3 @@ All APIs have been verified against the network trace captured on November 19, 2
 3. **Account Identification**: Account numbers may be empty in balances array for some account types. Use `accountId` as fallback.
 
 4. **Statement Date Range**: The implementation uses 1-year lookback period for statement retrieval.
-
-All functions validated successfully in Chrome browser extension context.
