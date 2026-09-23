@@ -272,6 +272,16 @@ describe('Fidelity API', () => {
             assert.equal((await getStatements(account))[0].statementDate, '2026-01-31');
         });
 
+        it('accepts the last Unix second representable as a four-digit year', async () => {
+            respond(statementList([documentEntry({ periodEndDate: 253402300799 })]));
+            assert.equal((await getStatements(account))[0].statementDate, '9999-12-31');
+        });
+
+        it('rejects an out-of-range generatedDate when periodEndDate is absent', async () => {
+            respond(statementList([documentEntry({ periodEndDate: undefined, generatedDate: 253402300800 })]));
+            await assert.rejects(getStatements(account), /Invalid Fidelity statement date/);
+        });
+
         it('accepts a genuinely empty statement list', async () => {
             respond(statementList([]));
             assert.deepEqual(await getStatements(account), []);
@@ -291,6 +301,8 @@ describe('Fidelity API', () => {
             [documentEntry({ periodEndDate: '2026-01-31' }), /expected Unix seconds/],
             [documentEntry({ periodEndDate: -1 }), /expected Unix seconds/],
             [documentEntry({ periodEndDate: 1.5 }), /expected Unix seconds/],
+            [documentEntry({ periodEndDate: 1769835600000 }), /Invalid Fidelity statement date/],
+            [documentEntry({ periodEndDate: 253402300800 }), /Invalid Fidelity statement date/],
             [documentEntry({ periodEndDate: 9000000000000 }), /Invalid Fidelity statement date/],
         ]) {
             it(`rejects malformed statement data: ${error.source}`, async () => {

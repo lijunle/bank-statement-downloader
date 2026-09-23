@@ -76,7 +76,7 @@ function formatStatementDate(seconds) {
         throw new Error('Invalid Fidelity statement date: expected Unix seconds');
     }
     const date = new Date(seconds * 1000);
-    if (Number.isNaN(date.getTime())) {
+    if (Number.isNaN(date.getTime()) || date.getUTCFullYear() > 9999) {
         throw new Error('Invalid Fidelity statement date');
     }
     return date.toISOString().split('T')[0];

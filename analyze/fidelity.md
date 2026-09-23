@@ -64,7 +64,9 @@ address records.
 }
 ```
 
-With that selection, the observed response contained only `emails`:
+`addrDetails` is retained from the observed request, while `contactTypes` selects
+only `EMAIL`. With that combination, the observed response contained only `emails`,
+not telephone or address records:
 
 ```json
 {
@@ -172,7 +174,8 @@ extension uses a six-month lookback.
 
 The dates in this example are synthetic Unix seconds. Multiply by 1,000 before
 constructing a JavaScript Date; do not use the historical MDDYYYY/MMDDYYYY parser.
-Convert the period-end date to the contract's `YYYY-MM-DD` value.
+Convert the period-end date to the contract's `YYYY-MM-DD` value. Reject dates
+outside the four-digit year range instead of emitting an extended-year ISO string.
 
 - `statement.docDetails.docDetail` is the response array; there is no GraphQL wrapper.
 - `formatTypes.formatType` is an object, not an array.
@@ -243,9 +246,9 @@ Credit-card endpoints below were not exercised in the 2026 observation.
 
 **Account Types and Download Flows:**
 
-- Brokerage/Example account group 3 Accounts - Direct PDF download
+- Brokerage/Investment Accounts - Direct PDF download
 - Credit Card Accounts - GraphQL with Base64-encoded PDF
-- Example account group 4 Accounts - Direct PDF download
+- Retirement Accounts - Direct PDF download
 
 **Key Implementation Notes:**
 
@@ -257,7 +260,7 @@ Credit-card endpoints below were not exercised in the 2026 observation.
 ### Account Categories
 
 The captured account overview includes investment, retirement, professionally managed,
-spend & save, authorized, and credit card categories. Example account group 3, retirement, and IRA
+spend & save, authorized, and credit card categories. Investment, retirement, and IRA
 accounts can share a consolidated statement.
 
 ---
@@ -491,7 +494,7 @@ Returns comprehensive account information grouped by categories:
         "groups": [
           {
             "id": "IA",
-            "name": "Example account group 3",
+            "name": "Investment",
             "items": [...],
             "balanceDetail": {
               "gainLossBalanceDetail": {
@@ -503,13 +506,13 @@ Returns comprehensive account information grouped by categories:
           },
           {
             "id": "RA",
-            "name": "Example account group 4",
+            "name": "Retirement",
             "items": [...],
             "balanceDetail": {...}
           },
           {
             "id": "CC",
-            "name": "Example account group 5",
+            "name": "Credit Cards",
             "items": [...]
           }
         ]
@@ -529,7 +532,7 @@ Returns comprehensive account information grouped by categories:
 - `acctSubTypeDesc`: Human-readable description
 - `preferenceDetail.name`: Account nickname/display name
 - `preferenceDetail.isHidden`: Whether account is hidden
-- `preferenceDetail.acctGroupId`: Group category (IA=Example account group 3, RA=Example account group 4, CC=Example account group 5, etc.)
+- `preferenceDetail.acctGroupId`: Group category (IA=Investment, RA=Retirement, CC=Credit Cards, etc.)
 - `gainLossBalanceDetail.totalMarketVal`: Current account balance
 - `acctAttrDetail.regTypeDesc`: Registration type (Individual, ROTH IRA, Traditional IRA, etc.)
 - `creditCardDetail.creditCardAcctNumber`: Full credit card account number (for credit cards)
@@ -550,11 +553,11 @@ Returns comprehensive account information grouped by categories:
 
 ##### Account Categories (Groups)
 
-- `IA`: Example account group 3 (Individual/Joint brokerage accounts)
-- `RA`: Example account group 4 (401k, HSA, IRA accounts)
+- `IA`: Investment (Individual/Joint brokerage accounts)
+- `RA`: Retirement (401k, HSA, IRA accounts)
 - `PM`: Professionally Managed (IRA accounts)
 - `SC`: Spend & Save (Cash Management, Savings)
-- `CC`: Example account group 5
+- `CC`: Credit Cards
 - `AA`: Authorized (Stock plans from employer)
 - `SP`: Stock Plans
 - `CG`: Charitable Giving
@@ -797,7 +800,7 @@ The `accountId` parameter must be the **full credit card account number**, obtai
 
 ### Task 4: Download Statement PDF
 
-#### For Brokerage/Example account group 3 Accounts
+#### For Brokerage/Investment Accounts
 
 ##### API Endpoint
 
@@ -1004,7 +1007,7 @@ POST https://digital.fidelity.com/ftgw/digital/credit-card/api/graphql
 
 ### API Flow Summary
 
-#### For Brokerage/Example account group 3/Example account group 4 Accounts
+#### For Brokerage/Investment/Retirement Accounts
 
 1. **GetDeliveryPref** → Get email (profile)
 2. **GetContext** → Get all accounts
@@ -1044,5 +1047,5 @@ Fidelity uses a GraphQL API architecture with separate endpoints for portfolio, 
 
 **Key Differences:**
 
-- **Brokerage/Example account group 3**: Direct PDF download via URL
-- **Example account group 5**: GraphQL API with Base64-encoded PDF content
+- **Brokerage/Investment**: Direct PDF download via URL
+- **Credit Cards**: GraphQL API with Base64-encoded PDF content
