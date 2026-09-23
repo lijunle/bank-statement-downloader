@@ -6,7 +6,7 @@
 - **Bank Name**: TD Direct Investing (WebBroker)
 - **Bank URL**: https://webbroker.td.com/
 - **HAR File**: `analyze/td_broker_1764055743651.har`
-- **Validation Status**: ✅ Validated on 2025-11-25
+- **Browser Observation Date**: 2025-11-25
 
 ## Session Identification
 
@@ -90,7 +90,7 @@ The API may return responses in two formats:
 }
 ```
 
-**Format 2 - Direct Payload (Browser validation)**:
+**Format 2 - Direct Payload (Observed in browser)**:
 
 ```json
 {
@@ -175,7 +175,7 @@ The API may return responses in two formats:
 }
 ````
 
-**Format 2 - Direct Array (Browser validation)**:
+**Format 2 - Direct Array (Observed in browser)**:
 
 ```json
 [
@@ -284,7 +284,7 @@ The API may return responses in two formats:
 }
 ````
 
-**Format 2 - Direct Object (Browser validation)**:
+**Format 2 - Direct Object (Observed in browser)**:
 
 ```json
 {

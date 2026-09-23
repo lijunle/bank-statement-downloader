@@ -4,9 +4,7 @@
 
 This document analyzes the PayPal APIs used to retrieve user profile information, list accounts, retrieve statements, and download statement PDFs. PayPal uses a mix of REST APIs and GraphQL endpoints, with some data embedded in server-side rendered HTML. The system supports both PayPal balance account statements and PayPal credit card statements through different API endpoints.
 
-**Validation Status**: ✅ **Fully Validated** (November 20, 2025)
-
-All APIs have been successfully validated in browser testing with complete end-to-end functionality confirmed.
+**Browser Observation Date**: November 20, 2025
 
 ## Base URLs
 
@@ -23,9 +21,6 @@ All APIs have been successfully validated in browser testing with complete end-t
 **Primary**: `localStorage.getItem('vf')` - Contains session token that works across all APIs  
 **Fallback**: `sessionStorage.getItem('PP_NC')` - Alternative session identifier  
 **Last Resort**: `TLTSID` cookie - Can be extracted from `document.cookie`
-
-**Validation Result**: ✅ Successfully extracted session ID from localStorage 'vf'  
-**Sample Session**: `bXRgqCN_jdOf4PKZ4IeMXac-LIqPwq6UQxtefOiq0uUu1ysnXzf3iylki_8wrl8A1oS6nGowXQ_LHiBU`
 
 ### Cookie Authentication
 
@@ -49,8 +44,7 @@ All API requests automatically include these cookies when using `credentials: 'i
 **Location**: Embedded in HTML at `/myaccount/credit/rewards-card/?source=FINANCIAL_SNAPSHOT`  
 **Pattern**: `"_csrf":"<token_with_unicode_escapes>"`  
 **Decoding Required**: Token contains unicode escapes (e.g., `\u002F` → `/`, `\u002B` → `+`)  
-**Header**: Must be included as `x-csrf-token` in GraphQL requests  
-**Validation Result**: ✅ Unicode decoding working correctly, CSRF token successfully used
+**Header**: Must be included as `x-csrf-token` in GraphQL requests
 
 ## 1. User Profile Information
 
@@ -61,8 +55,6 @@ All API requests automatically include these cookies when using `credentials: 'i
 **HTTP Method**: GET
 
 **Purpose**: Retrieves user profile information including first name. This is the only REST API endpoint that returns the user's name directly in JSON format. The endpoint is primarily used by PayPal's smart chat feature but provides useful profile data for account identification.
-
-**Validation Result**: ✅ **PASS** - Successfully retrieved profile name "John"
 
 **Request Headers**:
 
@@ -105,11 +97,6 @@ Accept: application/json
 **HTTP Method**: GET
 
 **Purpose**: Displays all PayPal accounts, balances, and linked payment methods. Account data is server-side rendered in HTML, not provided via separate JSON API. The page includes JavaScript-embedded data that can be extracted.
-
-**Validation Result**: ✅ **PASS** - Successfully detected 2 accounts:
-
-1. **Balance Account**: "PayPal Balance (USD)" with mask "USD"
-2. **Credit Card**: "PayPal Cashback World Mastercard" with mask "7324"
 
 **Request Headers**:
 
@@ -176,8 +163,6 @@ Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
 **HTTP Method**: GET
 
 **Purpose**: Lists available monthly transaction statements for PayPal balance account for the past 3 years. These statements show all transactions, fees, and balance changes for the user's PayPal account.
-
-**Validation Result**: ✅ **PASS** - Retrieved 25 statements (October 2023 to October 2025)
 
 **Request Headers**:
 
@@ -266,8 +251,6 @@ Accept: application/json
 **HTTP Method**: POST
 
 **Purpose**: Lists available billing statements for PayPal Cashback World Mastercard or other PayPal-branded credit cards. Returns statement headers with dates and balances.
-
-**Validation Result**: ✅ **PASS** - Retrieved 20 statements (November 2023 to September 2025)
 
 **Request Headers**:
 
@@ -383,8 +366,6 @@ x-csrf-token: <decoded_csrf_token>
 
 **Purpose**: Downloads monthly transaction statement as PDF file. The statement includes all PayPal balance account transactions, fees, and balance changes for the specified month.
 
-**Validation Result**: ✅ **PASS** - Downloaded 267,999 bytes PDF for October 2025
-
 **Request Headers**:
 
 ```
@@ -442,8 +423,6 @@ Content-Length: 267999
 **HTTP Method**: POST
 
 **Purpose**: Downloads credit card billing statement as PDF file. The statement includes all credit card transactions, payments, fees, and interest charges for the billing period.
-
-**Validation Result**: ✅ **PASS** - Downloaded 1,071,018 bytes PDF for September 9, 2025
 
 **Request Headers**:
 

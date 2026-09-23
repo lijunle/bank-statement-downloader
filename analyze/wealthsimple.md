@@ -6,25 +6,12 @@
 **Analysis Date**: November 23, 2025
 **HAR File**: `analyze/wealthsimple_1763899399558.har`
 **Implementation**: `bank/wealthsimple.mjs`
-**Validation Status**: ✅ All APIs validated and working
 
 ## Overview
 
 Wealthsimple uses a GraphQL API architecture for all account and document operations. The API is hosted at `https://my.wealthsimple.com/graphql` and requires bearer token authentication stored in cookies. All data fetching is done through GraphQL queries with specific operation names.
 
-## Validation Results
-
-### Browser Testing (November 23, 2025)
-
-All API functions have been validated in a live browser environment:
-
-- ✅ **getSessionId()**: Successfully extracts 755-character Bearer token from cookies
-- ✅ **getProfile()**: Returns profile information (email: john.doe@example.com, ID: identity-gY6Lf91dcOYYlWgU1KjhnCGhV8x)
-- ✅ **getAccounts()**: Retrieved 3 accounts (Non-registered Investment, TFSA Investment, Chequing)
-- ✅ **getStatements()**: Retrieved 30 statements for test account
-- ✅ **downloadStatement()**: Successfully downloads PDFs via background script with S3 host permissions
-
-### Key Findings
+## Key Findings
 
 1. **Authentication**: Token stored in `_oauth2_access_v2` cookie as JSON, not in meta tags or localStorage
 2. **GraphQL Structure**: Queries use snake_case field names (e.g., `s3_bucket_name`, `created_at`)
@@ -97,7 +84,7 @@ x-ws-profile: invest
 x-ws-session-id: {SESSION_ID}
 ```
 
-**Request Body** (Validated Implementation):
+**Request Body**:
 
 ```json
 {
@@ -107,7 +94,7 @@ x-ws-session-id: {SESSION_ID}
 }
 ```
 
-**Note**: The validated implementation does NOT use the `$id` parameter. The API automatically uses the identity from the authentication token. Requesting fields like `firstName` and `lastName` causes UNPROCESSABLE_ENTITY errors as they are not at the root level of the `identity` object.
+**Note**: The request does NOT use the `$id` parameter. The API automatically uses the identity from the authentication token. Requesting fields like `firstName` and `lastName` causes UNPROCESSABLE_ENTITY errors as they are not at the root level of the `identity` object.
 
 ### Response
 
@@ -145,7 +132,7 @@ x-ws-session-id: {SESSION_ID}
 
 **Headers**: Same as user profile request
 
-**Request Body** (Validated Implementation):
+**Request Body**:
 
 ```json
 {
@@ -157,7 +144,7 @@ x-ws-session-id: {SESSION_ID}
 }
 ```
 
-**Note**: The validated implementation does NOT use the `filter` parameter or `identityId` parameter. The `filter: {}` causes UNPROCESSABLE_ENTITY errors. The API automatically uses the identity from the authentication token.
+**Note**: The request does NOT use the `filter` parameter or `identityId` parameter. The `filter: {}` causes UNPROCESSABLE_ENTITY errors. The API automatically uses the identity from the authentication token.
 
 ### Response
 
@@ -258,7 +245,7 @@ x-ws-session-id: {SESSION_ID}
 
 **Headers**: Same as previous requests
 
-**Request Body** (Validated Implementation):
+**Request Body**:
 
 ```json
 {

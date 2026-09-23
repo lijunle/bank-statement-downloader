@@ -7,17 +7,14 @@
 - HAR File: `analyze/fidelity_1763597495016.har`
 - Captured: November 19, 2025
 - Implementation: `bank/fidelity.mjs`
-- Status: ✅ Validated
 
-## Implementation Status
+## API Flow Overview
 
-**Status:** ✅ Fully Validated and Working
+**Account Types and Download Flows:**
 
-**Supported Account Types:**
-
-- ✅ Brokerage/Investment Accounts - Direct PDF download
-- ✅ Credit Card Accounts - GraphQL with Base64-encoded PDF
-- ✅ Retirement Accounts - Direct PDF download
+- Brokerage/Investment Accounts - Direct PDF download
+- Credit Card Accounts - GraphQL with Base64-encoded PDF
+- Retirement Accounts - Direct PDF download
 
 **Key Implementation Notes:**
 
@@ -26,22 +23,11 @@
 - Credit card downloads use different API than brokerage (GraphQL vs direct URL)
 - Account filtering by `isHidden` flag implemented
 
-## Account Information
+## Account Categories
 
-Based on the captured network trace, the user has:
-
-- **10 accounts** across 6 categories:
-  - Investment (2 accounts)
-  - Retirement (2 accounts)
-  - Professionally managed (3 accounts)
-  - Spend & Save (1 account)
-  - Authorized (1 account)
-  - Credit cards (1 account - Visa Signature Rewards)
-
-**Statements Downloaded:**
-
-1. Credit Card Statement: Nov 2025 (Visa Signature Rewards, Statement date: Oct-18 to Nov-18)
-2. Multi-Account Consolidated Statement: Oct 2025 (includes investment, retirement, and IRA accounts)
+The captured account overview includes investment, retirement, professionally managed,
+spend & save, authorized, and credit card categories. Investment, retirement, and IRA
+accounts can share a consolidated statement.
 
 ---
 
@@ -52,9 +38,9 @@ Based on the captured network trace, the user has:
 Fidelity uses **HTTP cookies** for session management. The primary session cookies include:
 
 - **FC** - Main session token (encrypted) - _Present in HAR file_
-- **MC** - Secondary session token - _✅ Verified in live session_
-- **RC** - Secondary session token - _✅ Verified in live session_
-- **SC** - Secondary session token - _✅ Verified in live session_
+- **MC** - Secondary session token - _Observed in browser session_
+- **RC** - Secondary session token - _Observed in browser session_
+- **SC** - Secondary session token - _Observed in browser session_
 - **ATC** - Authentication token
 - **PORTSUM_XSRF-TOKEN** - CSRF protection token
 - **portsum\_.csrf** - Additional CSRF token
@@ -811,18 +797,13 @@ POST https://digital.fidelity.com/ftgw/digital/credit-card/api/graphql
 - **Total Entries**: 535 Fidelity domain requests
 - **Captured**: November 19, 2025, 4:22 PM
 
-**Downloaded Statements:**
+**APIs present in the capture:**
 
-1. Credit Card Statement (November 2025) - Downloaded via `GetStatement` GraphQL API (Base64-encoded)
-2. Brokerage Statement (October 31, 2025) - 91,540 bytes - Downloaded via direct PDF URL
-
-**Coverage:**
-
-- ✅ Portfolio summary API
-- ✅ Credit card API (details, transactions, rewards)
-- ✅ Document listing API
-- ✅ PDF download API
-- ✅ User state/preferences API
+- Portfolio summary API
+- Credit card API (details, transactions, rewards)
+- Document listing API
+- PDF download API
+- User state/preferences API
 
 ---
 

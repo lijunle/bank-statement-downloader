@@ -8,48 +8,11 @@
 **HAR File**: `analyze/discover_1763506982047.har`
 **HAR File Size**: 5.31 MB (181 entries)
 
-### User Profile
+### Observed Account Types and History
 
-- **Profile ID**: `73519284`
-- **Username**: `johndoe123`
-- **Profile Name**: `JOHN DOE`
-
-### Account List
-
-**1. Credit Card Account**
-
-- **Account ID/Key**: `8472916503`
-- **Account Type**: Credit Card
-- **Account Description**: Discover it Card
-- **Last 4 Digits**: `4271`
-- **Current Balance**: $0.00
-
-**2. Bank Account**
-
-- **Account ID**: `BK58371624`
-- **Account Type**: Checking
-- **Account Description**: Discover Checking W (Cashback Debit)
-- **Last 4 Digits**: `7036`
-- **Current Balance**: $1.02
-
-### Statement List
-
-**Credit Card Statements** (Account 8472916503):
-
-The API returns 63 statements spanning from June 2019 to October 2025:
-
-- Most Recent: October 20, 2025 (`20251020`)
-- Oldest Available: June 24, 2019 (`20190706`)
-- Coverage: Approximately 5+ years of statement history
-
-**Bank Statements** (Account BK58371624):
-
-- Statement Date: October 31, 2025
-  - Statement ID: `bankprod2|5839204716|20251031~4~STM~BK58371624~OC~00082947~~~~~|202511031623-bankstmt-oc1|00A3F72B00041956`
-  - PDF Size: 243,736 bytes
-- Statement Date: September 30, 2025
-  - Statement ID: `bankprod2|5839204716|20250930~4~STM~BK58371624~OC~00083651~~~~~|202510021312-bankstmt-oc1|00B4G83C00052067`
-  - PDF Size: ~240 KB
+The captured responses include credit card and checking accounts. The credit card
+statement list contains entries from 2019 to 2025; this is observed coverage, not a
+documented retention limit.
 
 ### Important Note: Multi-Domain Architecture
 
@@ -218,13 +181,13 @@ function getSessionInfo() {
 }
 ```
 
-#### Verification
+#### Captured Evidence
 
-Verified in HAR file:
+Observed in the referenced HAR:
 
-- Found in request cookies for all 181 entries
-- Confirmed `dcsession` and `REQID` are HttpOnly via Set-Cookie response headers
-- Confirmed `customerId`, `cif`, and `sectoken` are NOT HttpOnly
+- The cookies appear in captured requests
+- Set-Cookie response headers mark `dcsession` and `REQID` as HttpOnly
+- `customerId`, `cif`, and `sectoken` are NOT HttpOnly
 
 ---
 
@@ -313,14 +276,14 @@ Cookie: customerId=...; cif=...; dcsession=...; sectoken=...; [other cookies]
 - `name.formatted`: Full name for display
 - `email`: Contact email address
 
-#### Verification
+#### Captured Evidence
 
-Verified in HAR file:
+Observed in the referenced HAR:
 
 - HTTP Method: GET
 - Headers: Accept: application/json
 - Response: 200 OK with JSON payload
-- Contains expected profile ID and username
+- Response includes profile ID and username
 
 #### HTTP Headers
 
@@ -453,14 +416,14 @@ async function getProfileAndAccounts() {
 }
 ```
 
-#### Verification
+#### Captured Evidence
 
-Verified in HAR file:
+Observed in the referenced HAR:
 
 - Both APIs called without parameters
-- `/customer/info/card?` returns profile + 1 BANK account
-- `/customer/info/bank?` returns profile + 1 CARD account
-- Combined result: Complete profile + 2 accounts (all accounts)
+- `/customer/info/card?` returns profile and BANK accounts
+- `/customer/info/bank?` returns profile and CARD accounts
+- Combine both responses for profile and account information
 - Response: 200 OK with JSON payload
 
 ---
@@ -595,14 +558,14 @@ async function getAllAccounts() {
 - `/customer/info/card?` returns **BANK** accounts (opposite of what you'd expect)
 - `/customer/info/bank?` returns **CARD** accounts (opposite of what you'd expect)
 
-#### Verification
+#### Captured Evidence
 
-Verified in HAR file:
+Observed in the referenced HAR:
 
 - Both APIs called without parameters
-- `/customer/info/card?` returns 1 BANK account (BK58371624)
-- `/customer/info/bank?` returns 1 CARD account (8472916503)
-- Combined result: 2 total accounts
+- `/customer/info/card?` returns BANK accounts
+- `/customer/info/bank?` returns CARD accounts
+- Query both endpoints to collect BANK and CARD accounts
 
 ### Alternative API (Bank Accounts Only)
 
@@ -710,9 +673,9 @@ Cookie: [session cookies]
 
 **Note**: This API provides transaction data and summary info including the most recent statement date. To retrieve the full statement list, use the `v2/stmt` API with this date.
 
-##### Verification
+##### Captured Evidence
 
-Verified in HAR file:
+Observed in the referenced HAR:
 
 - HTTP Method: GET
 - Query Parameters: source=achome, transOnly=Y, selAcct=8472916503
@@ -798,15 +761,15 @@ const outer = JSON.parse(cleaned);
 const data = JSON.parse(outer.jsonResponse); // Now has statements[] array
 ```
 
-##### Verification
+##### Captured Evidence
 
-Verified in HAR file:
+Observed in the referenced HAR:
 
 - HTTP Method: GET
 - Query Parameter: stmtDate=20250920
-- Response: 200 OK with array of 63 statements spanning from 2019 to 2025
-- Security prefix confirmed: `)]}'` appears before JSON
-- Double-wrapped structure confirmed: statements in `jsonResponse` field
+- Response: 200 OK with a statement array
+- Security prefix: `)]}'` appears before JSON
+- Double-wrapped structure: statements in `jsonResponse` field
 
 ### 4.2 Bank Account Statements
 
@@ -884,14 +847,13 @@ Cookie: [session cookies]
 - Timestamp (e.g., "202511031623-bankstmt-oc1")
 - Hash/reference (e.g., "00A3F72B00041956")
 
-##### Verification
+##### Captured Evidence
 
-Verified in HAR file:
+Observed in the referenced HAR:
 
 - HTTP Method: GET
 - Path Parameter: BK58371624
 - Response: 200 OK with array of statement objects
-- Contains October 2025 and September 2025 statements
 
 ---
 
@@ -944,8 +906,6 @@ Cookie: dfsedskey=8472916503; [other session cookies]
 **Content-Type**: `application/pdf`
 **Response Body**: Binary PDF file
 
-**Example File Size**: 536 bytes (for test statement with minimal transactions)
-
 ##### Implementation Note
 
 **Important**: To download a statement for a specific credit card account, you must set the `dfsedskey` cookie to that account's ID before making the request.
@@ -970,16 +930,15 @@ async function downloadCardStatement(accountId, statementDate) {
 }
 ```
 
-##### Verification
+##### Captured Evidence
 
-Verified in HAR file:
+Observed in the referenced HAR:
 
 - HTTP Method: GET
 - Query Parameters: view=true, date=20251020
 - Cookie: dfsedskey=8472916503 (identifies the account)
 - Response: 200 OK
 - Content-Type: application/pdf
-- Response Size: 536 bytes
 
 #### Alternative API (Detailed Statement with Transactions)
 
@@ -1046,8 +1005,6 @@ Cookie: [session cookies]
 **Content-Type**: `application/pdf`
 **Response Body**: Binary PDF file
 
-**Example File Size**: 243,736 bytes (238 KB) for October 2025 statement
-
 ##### Statement ID Encoding
 
 **Raw Statement ID**:
@@ -1062,15 +1019,14 @@ bankprod2|5839204716|20251031~4~STM~BK58371624~OC~00082947~~~~~|202511031623-ban
 bankprod2%7C5839204716%7C20251031~4~STM~BK58371624~OC~00082947~~~~~%7C202511031623-bankstmt-oc1%7C00A3F72B00041956
 ```
 
-##### Verification
+##### Captured Evidence
 
-Verified in HAR file:
+Observed in the referenced HAR:
 
 - HTTP Method: GET
 - Path Parameters: accountId=BK58371624, statementId=bankprod2%7C5839204716%7C20251031~4~STM~BK58371624~OC~00082947~~~~~%7C202511031623-bankstmt-oc1%7C00A3F72B00041956
 - Response: 200 OK
 - Content-Type: application/pdf
-- Response Size: 243,736 bytes
 
 #### Alternative: Using HATEOAS Links
 
@@ -1091,28 +1047,21 @@ You can directly use the `href` from `links[rel="binary"]` without manually cons
 
 ---
 
-## API Verification Summary
+## API Endpoint Summary
 
-All APIs have been verified against the HAR file `discover_1763506982047.har` (181 entries, 5.31 MB).
+Endpoints observed in the HAR file `discover_1763506982047.har`:
 
-| Task                             | API Endpoint                                             | Method | Verified | Notes                                            |
-| -------------------------------- | -------------------------------------------------------- | ------ | -------- | ------------------------------------------------ |
-| **Task 1: Session ID**           | Cookies                                                  | N/A    |          | All session cookies found and validated          |
-| **Task 2: User Profile**         | `bank.discover.com/.../customer/profiles/v1`             | GET    |          | Returns profile ID 73519284, username johndoe123 |
-| **Task 2: User Profile (Alt 1)** | `portal.discover.com/.../customer/info/...`              | GET    |          | Returns profile + accounts                       |
-| **Task 2: User Profile (Alt 2)** | `card.discover.com/.../card-account-info`                | POST   |          | Returns displayName "John" + card details        |
-| **Task 3: List Accounts**        | `portal.discover.com/.../customeraccountinfo/v1/summary` | GET    |          | Returns both card and bank accounts              |
-| **Task 4: Card Statements**      | `card.discover.com/.../transactions/v1/recent`           | GET    |          | Returns last statement date 10/20/2025           |
-| **Task 4: Bank Statements**      | `bank.discover.com/.../documents/v1/.../statements`      | GET    |          | Returns array of 2 statements                    |
-| **Task 5: Card PDF**             | `card.discover.com/.../stmtPDF`                          | GET    |          | 536 bytes PDF for 20251020                       |
-| **Task 5: Bank PDF**             | `bank.discover.com/.../statements/{id}`                  | GET    |          | 243,736 bytes PDF for October 2025               |
-
-### Verification Methods Used
-
-- **PowerShell JSON parsing**: Loaded HAR file and queried specific entries
-- **Cookie validation**: Checked Set-Cookie headers for HttpOnly attribute
-- **Response validation**: Verified status codes, content types, and response sizes
-- **Parameter validation**: Confirmed query parameters and path parameters match documentation
+| Task | API Endpoint | Method | Response |
+| ---- | ------------ | ------ | -------- |
+| Session ID | Cookies | N/A | Session cookies and their HttpOnly attributes |
+| User Profile | `bank.discover.com/.../customer/profiles/v1` | GET | Profile ID and username |
+| User Profile (Alt 1) | `portal.discover.com/.../customer/info/...` | GET | Profile and accounts |
+| User Profile (Alt 2) | `card.discover.com/.../card-account-info` | POST | Display name and card details |
+| List Accounts | `portal.discover.com/.../customeraccountinfo/v1/summary` | GET | Card and bank accounts |
+| Card Statements | `card.discover.com/.../transactions/v1/recent` | GET | Most recent statement date |
+| Bank Statements | `bank.discover.com/.../documents/v1/.../statements` | GET | Statement array |
+| Card PDF | `card.discover.com/.../stmtPDF` | GET | PDF document |
+| Bank PDF | `bank.discover.com/.../statements/{id}` | GET | PDF document |
 
 ### Domain-Specific Notes
 
@@ -1273,15 +1222,3 @@ function getCurrentDomain() {
 **Analysis File**: `analyze/discover.md`
 **HAR File**: `analyze/discover_1763506982047.har`
 **HAR File Size**: 5.31 MB (181 entries)
-
-### Ready for Implementation
-
-All five analysis tasks have been completed successfully:
-
-1. Session ID identified (cookies validated, HttpOnly flags confirmed)
-2. User profile API identified (no parameters required)
-3. Account list API identified (no parameters required)
-4. Statement list APIs identified (separate for card/bank)
-5. Statement download APIs identified (separate for card/bank)
-
-All APIs verified in HAR file. Implementation can proceed.
