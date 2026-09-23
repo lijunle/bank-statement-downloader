@@ -2,7 +2,7 @@
     "compilerOptions": {
         "composite": true,
         "target": "ES2020",
-        "module": "ES2020",
+        "module": "NodeNext",
         "lib": [
             "ES2020"
         ],
@@ -16,7 +16,7 @@
         "esModuleInterop": true,
         "skipLibCheck": true,
         "forceConsistentCasingInFileNames": true,
-        "moduleResolution": "node"
+        "moduleResolution": "nodenext"
     },
     "include": [
         "**/*.mjs"
