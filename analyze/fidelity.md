@@ -6,7 +6,7 @@
 
 - Bank: Fidelity Investments
 - Website: https://www.fidelity.com / https://digitalservices.fidelity.com
-- Current scope: authenticated investment/retirement document flow
+- Current scope: authenticated investment/retirement Document Center and Fidelity credit-card statements
 - Historical source: `analyze/fidelity_1763597495016.har`
 - Implementation: `bank/fidelity.mjs`
 
@@ -126,9 +126,10 @@ Read `acctDetails[]` directly, not `data.getContext.person.assets`.
 Keep the existing hidden-account filter and field mapping: account number as
 `accountId`, its last four characters as `accountMask`, and the preference name as
 `accountName`. Records without an account identifier are not individual accounts.
-The observed account categories included Brokerage, WPS, and SPS; no credit-card
-response shape was established in this capture. Retain the historical credit-card
-mapping only as an unverified compatibility path.
+The observed account categories include Brokerage, WPS, SPS, and Fidelity Credit Card.
+For credit cards this endpoint can return only the four-digit `acctNum`, without
+`creditCardDetail`. That value is an account mask, not a statement API identifier;
+use the Portfolio context described in the credit-card section to obtain the full ID.
 
 ### Statement list
 
@@ -231,18 +232,146 @@ The bank UI creates a blob URL for its viewer; that transient URL is not the API
 
 ### Scope and open questions
 
-The current evidence covers the investment/retirement Document Center and the
+The Document Center evidence covers investment/retirement documents and the
 email-only profile lookup. It does not establish cryptocurrency, annuity-specific,
-workplace, or credit-card download behavior. The new Document Center response
-shapes take precedence over the historical investment examples below.
+or workplace download behavior. The current response shapes take precedence over
+the historical investment examples below.
+
+## Current Credit-Card Statements
+
+The linked credit-card account's Statements link opens
+`https://digital.fidelity.com/ftgw/digital/portfolio/creditstatements`.
+The webpage requests the following REST APIs on `dpservice.fidelity.com`, not the
+historical credit-card GraphQL endpoint. That GraphQL endpoint returned HTTP 403
+when the extension requested a statement list in the observed authenticated session.
+Use the current UI's APIs; do not retry rejected endpoints with authentication or
+fingerprint overrides.
+
+### Full credit-card identifier
+
+The Portfolio page calls:
+
+```http
+POST https://digital.fidelity.com/ftgw/digital/portfolio/api/GetContext
+Accept: application/json
+Content-Type: application/json
+```
+
+The JSON request body is `{}` and uses `credentials: 'include'`. The response is
+rooted at `getContext`, not `data.getContext`.
+
+```json
+{
+  "getContext": {
+    "person": {
+      "assets": [
+        {
+          "acctNum": "0002",
+          "acctType": "Fidelity Credit Card",
+          "creditCardDetail": {
+            "creditCardAcctNumber": "<FULL_CARD_ID>",
+            "memberId": "<MEMBER_ID>"
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+For a visible credit-card account lacking the full ID in the Document Center
+response, fetch this context once per account-list operation. Match the card by
+`acctType` and `acctNum`, require one unambiguous match, and use
+`creditCardDetail.creditCardAcctNumber` as the contract's `accountId`. Retain the
+short account number as `accountMask` and the Document Center's display name.
+If a full ID is already supplied, use it without an additional context request.
+Do not substitute `memberId` or the four-digit mask, and do not guess when two cards
+share a mask. Missing or ambiguous full IDs must produce an explicit error.
+
+The successful webpage statement request's path ID matched this field, not
+`acctNum`. The context request also returned account data when made from the
+Document Center origin with ordinary browser credentials; no extra extension host
+permissions were needed for that observed cross-origin flow.
+
+### Request metadata
+
+List and download are GET requests with no body. The webpage sends:
+
+```http
+Accept: application/json, text/plain, */*
+Content-Type: application/json
+appid: AP159750
+appname: Portfolio Summary Credit Card Account Management
+```
+
+Use `credentials: 'include'` so the browser supplies the session cookies. Do not
+copy live Cookie, Origin, Referer, or tracing values. The application headers are
+public routing constants; their presence in a capture does not independently
+establish that each is required.
+
+### Statement list
+
+```http
+GET https://dpservice.fidelity.com/ftgw/dp/customer-creditcard-statements/v1/customers/creditcards/{FULL_CARD_ID}/statements?startDate={YYYY-MM-DD}&endDate={YYYY-MM-DD}
+```
+
+Encode the full card ID as one URL path segment. The UI used a six-month date
+filter; this does not establish the bank's retention limit or guarantee a statement
+for every month.
+
+```json
+{
+  "statements": [
+    {
+      "statementName": "January 2026 (pdf)",
+      "statementStartDate": "2025-12-19",
+      "statementEndDate": "2026-01-18",
+      "statementDate": "2026-01-18",
+      "cardOffersAndNotices": []
+    }
+  ],
+  "isPaperlessEnrolled": "Already Enrolled"
+}
+```
+
+`statements` is a top-level array. Use its `statementDate` for `statementId`, the
+contract's date, and the download path. In the observed response it equals
+`statementEndDate`; do not infer that a missing download date can be reconstructed
+from a display label. Require a valid `YYYY-MM-DD` calendar date. An empty array is
+a valid empty list; a missing array or malformed entry is an error.
+`cardOffersAndNotices` describes inserts, not the main statement PDF.
+
+### Download
+
+```http
+GET https://dpservice.fidelity.com/ftgw/dp/customer-creditcard-statements/v1/customers/creditcards/{FULL_CARD_ID}/statements/{STATEMENT_DATE}
+```
+
+The webpage's selected statement supplies the full card ID and the date from the
+list. The response is JSON, not a direct PDF and not a GraphQL wrapper:
+
+```json
+{
+  "statement": {
+    "statementDate": "2026-01-18",
+    "pageContent": "<BASE64_PDF>"
+  }
+}
+```
+
+Require the returned date to match the requested statement. Decode `pageContent`
+and return an `application/pdf` Blob. Reject empty, malformed, or non-PDF content
+rather than saving an error as a statement. The bank UI opens a blob URL; the
+temporary viewer URL is not a reusable download endpoint. No external issuer SSO
+was involved in this observed Fidelity flow.
 
 ---
 
 ## Historical capture
 
 The remaining sections describe the older GraphQL and direct-PDF flow. They are
-retained for provenance and credit-card reference, not as current endpoint guidance.
-Credit-card endpoints below were not exercised in the current investigation.
+retained for provenance, not as current endpoint guidance.
+The REST flows above supersede the historical investment and credit-card examples.
 
 ### API Flow Overview
 
