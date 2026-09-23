@@ -17,7 +17,7 @@
         "esModuleInterop": true,
         "skipLibCheck": true,
         "forceConsistentCasingInFileNames": true,
-        "moduleResolution": "node"
+        "moduleResolution": "bundler"
     },
     "include": [
         "**/*.mjs",
