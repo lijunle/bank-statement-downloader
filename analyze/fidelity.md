@@ -3,18 +3,249 @@
 **Bank Information:**
 
 - Bank: Fidelity Investments
-- Website: https://www.fidelity.com / https://digital.fidelity.com
-- HAR File: `analyze/fidelity_1763597495016.har`
-- Captured: November 19, 2025
+- Website: https://www.fidelity.com / https://digitalservices.fidelity.com
+- Current observations: September 23, 2026, authenticated investment/retirement document flow
+- Historical source: `analyze/fidelity_1763597495016.har`, captured November 19, 2025
 - Implementation: `bank/fidelity.mjs`
 
-## API Flow Overview
+## Current Document Center (2026-09-23)
+
+The portfolio's Documents link now opens
+`https://digitalservices.fidelity.com/navigate/ent-documentcenter/statements`.
+The investment/retirement flow uses JSON REST endpoints rather than the historical
+GraphQL document API. Use the Document Center origin for extension operations.
+
+The authenticated portfolio still uses a separate REST-style
+`POST https://digital.fidelity.com/ftgw/digital/portfolio/api/GetContext` with `{}`.
+Its response is rooted at `getContext`, without a GraphQL `data` wrapper. The
+Document Center obtains its accounts through the endpoint described below instead.
+
+The historical `POST /ftgw/digital/documents/api/graphql` returned HTTP 403 on its
+own `digital.fidelity.com` origin in the observed session. From the Document Center
+origin, its cross-origin preflight returned 403. This is evidence for using the
+current UI's endpoints, not proof that every historical API has been removed.
+Do not bypass a rejected session or conceal automation.
+
+### Authentication and application headers
+
+The observed requests use browser session cookies with `credentials: 'include'`;
+no Authorization header was present. Do not copy cookie values into code or notes.
+Session identification continues to use the existing FC/MC/RC/SC cookie mechanism.
+Persisted cookies do not guarantee that authentication is still valid.
+
+The UI sends `Accept: application/json`, `Content-Type: application/json` for
+POST bodies, and application metadata:
+
+| Request group | `appid` and `fid-originating-app-id` | `appname` | `fid-originating-app-version` |
+| --- | --- | --- | --- |
+| Profile contacts | `AP162039` | `Enterprise Personal Info` | `2` |
+| Document accounts and statement list | `AP160308` | `Document Access Hub` | `1` |
+| Statement download | `AP160308` | `Document Access Hub` | `1.0` |
+
+These are application-routing constants, not user credentials. The browser supplies
+Cookie, Origin, and Referer. Do not hardcode per-request tracing identifiers.
+Header presence alone does not prove that each header is mandatory. A reduced
+contacts request without the application headers and address-selection field
+returned 400; the email-only request below with the observed metadata returned JSON.
+Those differences were not isolated individually.
+
+### Profile: email-only contacts
+
+The bank's Profile -> Personal information page requests
+`POST https://digitalservices.fidelity.com/ftgw/dp/rwcf-cm-contacts/v4/customers/contacts/get`.
+The extension only needs the retail primary email; do not request telephone or
+address records.
+
+```json
+{
+  "workplaceSrcs": ["PARTICIPANT"],
+  "contactTypes": ["EMAIL"],
+  "addrDetails": ["CUSTOMER"]
+}
+```
+
+With that selection, the observed response contained only `emails`:
+
+```json
+{
+  "emails": [
+    {
+      "email": "person@example.com",
+      "type": "PRIMARY",
+      "custRel": "RETAIL"
+    }
+  ]
+}
+```
+
+Map the `PRIMARY` / `RETAIL` email to both `profileId` and `profileName`, preserving
+the existing contract. Missing or ambiguous primary-email data is an error, not an
+anonymous-profile fallback.
+
+### Account list
+
+`POST https://dpservice.fidelity.com/ftgw/dp/customer-am-acctnxt/v2/accounts`
+
+```json
+{
+  "acctCategory": "Brokerage,StockPlans,Annuity,Charitable,FidelityCreditCards,InternalDigital,BrokerageLending,RegisteredStock,WorkplaceBenefits,WorkplaceContributions",
+  "filters": {
+    "returnCustomerAttrDetail": true,
+    "returnPreferenceDetail": true,
+    "returnAcctRelAttrDetail": true,
+    "returnAcctIndDetail": true,
+    "returnOrderedAccounts": true,
+    "returnAcctStateDetail": true
+  }
+}
+```
+
+Read `acctDetails[]` directly, not `data.getContext.person.assets`.
+
+```json
+{
+  "acctDetails": [
+    {
+      "acctNum": "ACCOUNT0001",
+      "acctType": "Brokerage",
+      "acctSubTypeDesc": "Individual",
+      "preferenceDetail": {
+        "name": "Example investment account",
+        "isHidden": false,
+        "acctGroupId": "IA"
+      }
+    }
+  ]
+}
+```
+
+Keep the existing hidden-account filter and field mapping: account number as
+`accountId`, its last four characters as `accountMask`, and the preference name as
+`accountName`. Records without an account identifier are not individual accounts.
+The observed account categories included Brokerage, WPS, and SPS; no credit-card
+response shape was established in this capture. Retain the historical credit-card
+mapping only as an unverified compatibility path.
+
+### Statement list
+
+`POST https://digitalservices.fidelity.com/ftgw/dp/retail-am-financialdoc/v1/accounts/communications/financial-documents/statements`
+
+```json
+{
+  "startDate": "2026-01-01",
+  "endDate": "2026-09-23",
+  "docType": "STMT",
+  "hasCryptoAccount": false,
+  "annuityAccountLookup": true
+}
+```
+
+Dates are request filters in `YYYY-MM-DD` format. The UI's default window was
+three months; it is not evidence of a server retention limit. The historical
+extension uses a six-month lookback.
+
+```json
+{
+  "statement": {
+    "docDetails": {
+      "docDetail": [
+        {
+          "id": "<STATEMENT_ID>",
+          "type": "PI Monthly/Quarterly Statement",
+          "isHouseholded": true,
+          "periodStartDate": 1767243600,
+          "periodEndDate": 1769835600,
+          "generatedDate": 1769835600,
+          "formatTypes": {
+            "formatType": {
+              "isPDF": true,
+              "isHTML": false,
+              "isCSV": true
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+The dates in this example are synthetic Unix seconds. Multiply by 1,000 before
+constructing a JavaScript Date; do not use the historical MDDYYYY/MMDDYYYY parser.
+Convert the period-end date to the contract's `YYYY-MM-DD` value.
+
+- `statement.docDetails.docDetail` is the response array; there is no GraphQL wrapper.
+- `formatTypes.formatType` is an object, not an array.
+- Keep PDF-capable entries and use the opaque `id` as `statementId`.
+- Non-consolidated entries identify their account with `acctNum`; compare the full
+  account identifier, not just the last four characters.
+- Consolidated entries use `isHouseholded: true` and may omit `acctNum`. Do not drop
+  them solely because an account number is absent. Such a document can appear under
+  multiple investment accounts; its presence does not establish every constituent
+  account without inspecting the document.
+- `formatDocIds` can occur on non-consolidated entries. The observed consolidated
+  download used `docDetail.id` directly; do not assume a format-specific ID is required.
+- `type` is a display description, not the download's `docType` value.
+
+### Download
+
+`POST https://digitalservices.fidelity.com/ftgw/dp/retail-am-financialdoc/v2/accounts/communications/financial-documents/download`
+
+```json
+{
+  "id": "<STATEMENT_ID>",
+  "formatType": "PDF",
+  "docType": "STMT",
+  "acctType": "Brokerage"
+}
+```
+
+The ID comes unchanged from the statement-list response. `Brokerage` was the UI's
+download category for the selected consolidated investment/retirement statement;
+do not substitute the extension's generic `Investment` account type.
+
+```json
+{
+  "document": {
+    "docDetail": {
+      "contentType": "application/pdf",
+      "content": "<BASE64_PDF>",
+      "encoding": "Base64",
+      "deflated": "Y",
+      "updateViewedInd": true
+    }
+  }
+}
+```
+
+Decode `document.docDetail.content` from Base64 and return a PDF Blob. Despite the
+`deflated: "Y"` metadata, the observed decoded bytes were already a readable PDF;
+do not blindly inflate them. Reject missing content, unsupported encodings, or
+non-PDF decoded bytes rather than saving a JSON/HTML error as a statement.
+The bank UI creates a blob URL for its viewer; that transient URL is not the API.
+
+### Scope and open questions
+
+The current evidence covers the investment/retirement Document Center and the
+email-only profile lookup. It does not establish cryptocurrency, annuity-specific,
+workplace, or credit-card download behavior. The new Document Center response
+shapes take precedence over the historical investment examples below.
+
+---
+
+## Historical capture (2025-11-19)
+
+The remaining sections describe the older GraphQL and direct-PDF flow. They are
+retained for provenance and credit-card reference, not as current endpoint guidance.
+Credit-card endpoints below were not exercised in the 2026 observation.
+
+### API Flow Overview
 
 **Account Types and Download Flows:**
 
-- Brokerage/Investment Accounts - Direct PDF download
+- Brokerage/Example account group 3 Accounts - Direct PDF download
 - Credit Card Accounts - GraphQL with Base64-encoded PDF
-- Retirement Accounts - Direct PDF download
+- Example account group 4 Accounts - Direct PDF download
 
 **Key Implementation Notes:**
 
@@ -23,17 +254,17 @@
 - Credit card downloads use different API than brokerage (GraphQL vs direct URL)
 - Account filtering by `isHidden` flag implemented
 
-## Account Categories
+### Account Categories
 
 The captured account overview includes investment, retirement, professionally managed,
-spend & save, authorized, and credit card categories. Investment, retirement, and IRA
+spend & save, authorized, and credit card categories. Example account group 3, retirement, and IRA
 accounts can share a consolidated statement.
 
 ---
 
-## Session Authentication
+### Session Authentication
 
-### Session Identification
+#### Session Identification
 
 Fidelity uses **HTTP cookies** for session management. The primary session cookies include:
 
@@ -49,7 +280,7 @@ All these cookies are **Not HttpOnly** and CAN be accessed via JavaScript.
 
 **Note**: Different Fidelity sessions may use different session cookies (FC, MC, RC, or SC). The implementation checks for any of these cookies to ensure compatibility across different browsers or login sessions.
 
-### Important Notes
+#### Important Notes
 
 - Sessions expire after inactivity
 - Multi-factor authentication (MFA) is required at login
@@ -57,60 +288,60 @@ All these cookies are **Not HttpOnly** and CAN be accessed via JavaScript.
 
 ---
 
-## API Endpoints Overview
+### API Endpoints Overview
 
 Fidelity uses a **GraphQL-based API architecture** with multiple specialized endpoints:
 
-### 1. Portfolio API
+#### 1. Portfolio API
 
 - **Base URL**: `https://digital.fidelity.com/ftgw/digital/portfolio/api/graphql`
 - **Purpose**: Portfolio summary, account state, preferences
 
-### 2. Credit Card API
+#### 2. Credit Card API
 
 - **Base URL**: `https://digital.fidelity.com/ftgw/digital/credit-card/api/graphql`
 - **Purpose**: Credit card statement listing
 
-### 3. Documents API
+#### 3. Documents API
 
 - **Base URL**: `https://digital.fidelity.com/ftgw/digital/documents/api/graphql`
 - **Purpose**: Statement listing and document metadata
 
-### 4. PDF Statement Download
+#### 4. PDF Statement Download
 
 - **Base URL**: `https://digital.fidelity.com/ftgw/digital/documents/PDFStatement/STMT/pdf/`
 - **Type**: REST endpoint for binary PDF download
 
 ---
 
-## Task 1: Retrieve User Profile Information
+### Task 1: Retrieve User Profile Information
 
 **Note**: Fidelity does not provide a dedicated user name API. Use the email address from `GetDeliveryPref` as the profile identifier.
 
-### Delivery Preferences API
+#### Delivery Preferences API
 
-#### API Endpoint
+##### API Endpoint
 
 ```
 POST https://digital.fidelity.com/ftgw/digital/documents/api/graphql
 ```
 
-#### HTTP Method
+##### HTTP Method
 
 `POST`
 
-#### Required Headers
+##### Required Headers
 
 - `Content-Type: application/json`
 - `Cookie`: [Session cookies from login]
 
-#### Request Parameters
+##### Request Parameters
 
 GraphQL operation: `GetDeliveryPref`
 
 No variables required.
 
-#### Request Body Example
+##### Request Body Example
 
 ```json
 {
@@ -119,7 +350,7 @@ No variables required.
 }
 ```
 
-#### Response Structure
+##### Response Structure
 
 Returns email and delivery preferences:
 
@@ -130,7 +361,7 @@ Returns email and delivery preferences:
       "deliveryPrefInquiry": {
         "deliveryPref": {
           "custInformation": {
-            "emailAddr": "JOHN.DOE@EXAMPLE.COM"
+            "emailAddr": "person@example.com"
           },
           "docDeliveryPref": {
             "isElectronicMonthlyQuarterlyStmt": true,
@@ -143,13 +374,13 @@ Returns email and delivery preferences:
 }
 ```
 
-### Important Fields
+#### Important Fields
 
 - `emailAddr`: User's email address (uppercase format) - **Use this as the profile identifier/name**
 - `isElectronicMonthlyQuarterlyStmt`: Boolean indicating electronic delivery preference
 - `fundRprts`: Report delivery method
 
-### Profile ID/Name
+#### Profile ID/Name
 
 Use email address as the profile identifier:
 
@@ -158,11 +389,11 @@ Use email address as the profile identifier:
 
 ---
 
-## Task 2: List All Accounts
+### Task 2: List All Accounts
 
-### Portfolio Summary Accounts
+#### Portfolio Summary Accounts
 
-#### API Endpoint
+##### API Endpoint
 
 ```
 POST https://digital.fidelity.com/ftgw/digital/portfolio/api/graphql
@@ -170,23 +401,23 @@ POST https://digital.fidelity.com/ftgw/digital/portfolio/api/graphql
 
 This endpoint provides portfolio-level account information (investment, retirement, brokerage accounts).
 
-#### HTTP Method
+##### HTTP Method
 
 `POST`
 
-#### Required Headers
+##### Required Headers
 
 - `Content-Type: application/json`
 - `Cookie`: [Session cookies]
 - `Referer`: https://digital.fidelity.com/ftgw/digital/portfolio/summary
 
-#### Request Parameters
+##### Request Parameters
 
 GraphQL operation: `GetContext`
 
 **No variables required** - retrieves all accounts for the authenticated user.
 
-#### Request Body Example
+##### Request Body Example
 
 ```json
 {
@@ -195,7 +426,7 @@ GraphQL operation: `GetContext`
 }
 ```
 
-#### Response Structure
+##### Response Structure
 
 Returns comprehensive account information grouped by categories:
 
@@ -207,29 +438,29 @@ Returns comprehensive account information grouped by categories:
         "balances": {
           "balanceDetail": {
             "gainLossBalanceDetail": {
-              "totalMarketVal": 8100.87,
-              "todaysGainLoss": -781.18,
-              "todaysGainLossPct": -1.12
+              "totalMarketVal": 0,
+              "todaysGainLoss": 0,
+              "todaysGainLossPct": 0
             }
           }
         },
         "assets": [
           {
-            "acctNum": "K48271593",
+            "acctNum": "<ACCOUNT_ID_1>",
             "acctType": "Brokerage",
             "acctSubType": "Brokerage",
             "acctSubTypeDesc": "Brokerage General Investing Person",
             "acctCreationDate": 1635224400,
             "preferenceDetail": {
-              "name": "MY STOCK",
+              "name": "Example account group 1",
               "isHidden": false,
               "isDefaultAcct": false,
               "acctGroupId": "IA"
             },
             "gainLossBalanceDetail": {
-              "totalMarketVal": 4247.22,
-              "todaysGainLoss": 162.9,
-              "todaysGainLossPct": 3
+              "totalMarketVal": 0,
+              "todaysGainLoss": 0,
+              "todaysGainLossPct": 0
             },
             "acctAttrDetail": {
               "regTypeDesc": "Individual - TOD",
@@ -237,22 +468,22 @@ Returns comprehensive account information grouped by categories:
             }
           },
           {
-            "acctNum": "3842",
+            "acctNum": "0002",
             "acctType": "Fidelity Credit Card",
             "acctSubType": "Credit Card",
             "acctSubTypeDesc": "Credit Card",
             "preferenceDetail": {
-              "name": "Visa Signature Rewards",
+              "name": "Example account group 2",
               "isHidden": false,
               "isDefaultAcct": false,
               "acctGroupId": "CC"
             },
             "gainLossBalanceDetail": {
-              "totalMarketVal": 141.3
+              "totalMarketVal": 0
             },
             "creditCardDetail": {
-              "creditCardAcctNumber": "00007291638452917486",
-              "memberId": "82749163524",
+              "creditCardAcctNumber": "<ACCOUNT_ID_3>",
+              "memberId": "<MEMBER_ID_1>",
               "twelveMonthRewards": "87.21"
             }
           }
@@ -260,25 +491,25 @@ Returns comprehensive account information grouped by categories:
         "groups": [
           {
             "id": "IA",
-            "name": "Investment",
+            "name": "Example account group 3",
             "items": [...],
             "balanceDetail": {
               "gainLossBalanceDetail": {
-                "totalMarketVal": 3947.09,
-                "todaysGainLoss": -105.72,
-                "todaysGainLossPct": -2.75
+                "totalMarketVal": 0,
+                "todaysGainLoss": 0,
+                "todaysGainLossPct": 0
               }
             }
           },
           {
             "id": "RA",
-            "name": "Retirement",
+            "name": "Example account group 4",
             "items": [...],
             "balanceDetail": {...}
           },
           {
             "id": "CC",
-            "name": "Credit Cards",
+            "name": "Example account group 5",
             "items": [...]
           }
         ]
@@ -288,7 +519,7 @@ Returns comprehensive account information grouped by categories:
 }
 ```
 
-#### Important Fields in Response
+##### Important Fields in Response
 
 **Account Level (`assets` array):**
 
@@ -298,7 +529,7 @@ Returns comprehensive account information grouped by categories:
 - `acctSubTypeDesc`: Human-readable description
 - `preferenceDetail.name`: Account nickname/display name
 - `preferenceDetail.isHidden`: Whether account is hidden
-- `preferenceDetail.acctGroupId`: Group category (IA=Investment, RA=Retirement, CC=Credit Cards, etc.)
+- `preferenceDetail.acctGroupId`: Group category (IA=Example account group 3, RA=Example account group 4, CC=Example account group 5, etc.)
 - `gainLossBalanceDetail.totalMarketVal`: Current account balance
 - `acctAttrDetail.regTypeDesc`: Registration type (Individual, ROTH IRA, Traditional IRA, etc.)
 - `creditCardDetail.creditCardAcctNumber`: Full credit card account number (for credit cards)
@@ -317,19 +548,19 @@ Returns comprehensive account information grouped by categories:
 - `balanceDetail.gainLossBalanceDetail.todaysGainLoss`: Today's gain/loss in dollars
 - `balanceDetail.gainLossBalanceDetail.todaysGainLossPct`: Today's gain/loss percentage
 
-#### Account Categories (Groups)
+##### Account Categories (Groups)
 
-- `IA`: Investment (Individual/Joint brokerage accounts)
-- `RA`: Retirement (401k, HSA, IRA accounts)
+- `IA`: Example account group 3 (Individual/Joint brokerage accounts)
+- `RA`: Example account group 4 (401k, HSA, IRA accounts)
 - `PM`: Professionally Managed (IRA accounts)
 - `SC`: Spend & Save (Cash Management, Savings)
-- `CC`: Credit Cards
+- `CC`: Example account group 5
 - `AA`: Authorized (Stock plans from employer)
 - `SP`: Stock Plans
 - `CG`: Charitable Giving
 - Other groups: ID (Cryptocurrency), EA (Education), FV (Non-Fidelity), etc.
 
-#### Notes
+##### Notes
 
 - Returns all account types (brokerage, retirement, credit cards, stock plans) in a single call
 - Credit card accounts: `acctNum` shows last 4 digits; use `creditCardDetail.creditCardAcctNumber` for full account number
@@ -338,29 +569,29 @@ Returns comprehensive account information grouped by categories:
 
 ---
 
-## Task 3: List Available Statements
+### Task 3: List Available Statements
 
-### API Endpoint
+#### API Endpoint
 
 ```
 POST https://digital.fidelity.com/ftgw/digital/documents/api/graphql
 ```
 
-### HTTP Method
+#### HTTP Method
 
 `POST`
 
-### Required Headers
+#### Required Headers
 
 - `Content-Type: application/json`
 - `Cookie`: [Session cookies]
 - `Referer`: https://digital.fidelity.com/ftgw/digital/documents
 
-### GraphQL Operation
+#### GraphQL Operation
 
 `GetStatements`
 
-### Request Parameters
+#### Request Parameters
 
 ```json
 {
@@ -374,7 +605,7 @@ POST https://digital.fidelity.com/ftgw/digital/documents/api/graphql
 }
 ```
 
-### Request Body Example
+#### Request Body Example
 
 ```json
 {
@@ -388,13 +619,13 @@ POST https://digital.fidelity.com/ftgw/digital/documents/api/graphql
 }
 ```
 
-### Parameters
+#### Parameters
 
 - `docType`: Document type (e.g., "STMT" for statements)
 - `startDate`: Start date filter (YYYY-MM-DD format)
 - `endDate`: End date filter (YYYY-MM-DD format)
 
-### Response Structure
+#### Response Structure
 
 ```json
 {
@@ -429,7 +660,7 @@ POST https://digital.fidelity.com/ftgw/digital/documents/api/graphql
 }
 ```
 
-### Important Fields
+#### Important Fields
 
 - `id`: Statement ID (used for downloading PDF)
 - `type`: Document type (STMT, TAX, etc.)
@@ -440,7 +671,7 @@ POST https://digital.fidelity.com/ftgw/digital/documents/api/graphql
 - `isHouseholded`: Whether this is a household/consolidated statement
 - `formatTypes.formatType`: Available formats (PDF, CSV)
 
-### Notes
+#### Notes
 
 - Returns statements for all brokerage/investment/retirement accounts (not credit cards)
 - Date range filters statements by period end date
@@ -449,19 +680,19 @@ POST https://digital.fidelity.com/ftgw/digital/documents/api/graphql
 
 ---
 
-### For Credit Card Accounts (Alternative API)
+#### For Credit Card Accounts (Alternative API)
 
-#### API Endpoint
+##### API Endpoint
 
 ```
 POST https://digital.fidelity.com/ftgw/digital/credit-card/api/graphql
 ```
 
-#### HTTP Method
+##### HTTP Method
 
 `POST`
 
-#### Required Headers
+##### Required Headers
 
 - `Content-Type: application/json`
 - `Cookie`: [Session cookies]
@@ -469,17 +700,17 @@ POST https://digital.fidelity.com/ftgw/digital/credit-card/api/graphql
 - `apollographql-client-version: 0.0.1`
 - `Referer: https://digital.fidelity.com/ftgw/digital/portfolio/creditstatements`
 
-#### GraphQL Operation
+##### GraphQL Operation
 
 `GetStatementsList`
 
-#### Request Parameters
+##### Request Parameters
 
 **Query Variables:**
 
 ```json
 {
-  "accountId": "00007291638452917486",
+  "accountId": "<ACCOUNT_ID_3>",
   "dateRange": {
     "startDate": "2025-05-19",
     "endDate": "2025-11-19"
@@ -493,20 +724,20 @@ The `accountId` parameter must be the **full credit card account number**, obtai
 
 1. **GetContext API** (Task 2) → `creditCardDetail.creditCardAcctNumber`
 
-   - Example: `"creditCardAcctNumber": "00007291638452917486"`
-   - This is the FULL account number, not the shortened `acctNum` (e.g., "3842")
+   - Example: `"creditCardAcctNumber": "<ACCOUNT_ID_3>"`
+   - This is the FULL account number, not the shortened `acctNum` (e.g., "0002")
 
 2. **Do NOT use** the `acctNum` field from the credit card item in the GetContext response
-   - `acctNum: "3842"` ← This is the LAST 4 digits only
-   - `creditCardDetail.creditCardAcctNumber: "00007291638452917486"` ← Use this
+   - `acctNum: "0002"` ← This is the LAST 4 digits only
+   - `creditCardDetail.creditCardAcctNumber: "<ACCOUNT_ID_3>"` ← Use this
 
-#### Request Body Example
+##### Request Body Example
 
 ```json
 {
   "operationName": "GetStatementsList",
   "variables": {
-    "accountId": "00007291638452917486",
+    "accountId": "<ACCOUNT_ID_3>",
     "dateRange": {
       "startDate": "2025-05-19",
       "endDate": "2025-11-19"
@@ -516,7 +747,7 @@ The `accountId` parameter must be the **full credit card account number**, obtai
 }
 ```
 
-#### Response Structure
+##### Response Structure
 
 ```json
 {
@@ -542,7 +773,7 @@ The `accountId` parameter must be the **full credit card account number**, obtai
 }
 ```
 
-#### Important Fields
+##### Important Fields
 
 - `statementName`: Human-readable statement name with date range
 - `statementStartDate`: Statement period start date (YYYY-MM-DD)
@@ -552,11 +783,11 @@ The `accountId` parameter must be the **full credit card account number**, obtai
   - `description`: Insert description
 - `isPaperlessEnrolled`: Paperless enrollment status
 
-#### Source APIs
+##### Source APIs
 
 **Account ID Source**: `GetContext` API (Task 2) → `creditCardDetail.creditCardAcctNumber`
 
-#### Notes
+##### Notes
 
 - Credit card specific API
 - Requires full account number from `creditCardDetail.creditCardAcctNumber` (not `acctNum`)
@@ -564,21 +795,21 @@ The `accountId` parameter must be the **full credit card account number**, obtai
 
 ---
 
-## Task 4: Download Statement PDF
+### Task 4: Download Statement PDF
 
-### For Brokerage/Investment Accounts
+#### For Brokerage/Example account group 3 Accounts
 
-#### API Endpoint
+##### API Endpoint
 
 ```
 GET https://digital.fidelity.com/ftgw/digital/documents/PDFStatement/STMT/pdf/Statement{DATE}.pdf
 ```
 
-#### HTTP Method
+##### HTTP Method
 
 `GET`
 
-#### URL Structure
+##### URL Structure
 
 ```
 https://digital.fidelity.com/ftgw/digital/documents/PDFStatement/{DOCTYPE}/pdf/{FILENAME}.pdf?id={ENCODED_ID}
@@ -587,49 +818,49 @@ https://digital.fidelity.com/ftgw/digital/documents/PDFStatement/{DOCTYPE}/pdf/{
 **Example:**
 
 ```
-https://digital.fidelity.com/ftgw/digital/documents/PDFStatement/STMT/pdf/Statement10312025.pdf?id=TjE4NS0yNy0xOUhGNzNWMDA5MjAwNTgxMDI3NCwyLEZDRiwzNzQ5
+https://digital.fidelity.com/ftgw/digital/documents/PDFStatement/STMT/pdf/Statement10312025.pdf?id=RVhBTVBMRV9TVEFURU1FTlRfSURfMQ==
 ```
 
-### URL Parameters
+#### URL Parameters
 
 - `{DOCTYPE}`: Document type (e.g., "STMT")
 - `{FILENAME}`: PDF filename (e.g., "Statement10312025.pdf")
 - `id`: Base64-encoded statement identifier from `GetStatements` API
 
-### Required Headers
+#### Required Headers
 
 - `Cookie`: [Session cookies]
 - `Referer`: https://digital.fidelity.com/ftgw/digital/documents
 
-### Response
+#### Response
 
 - **Content-Type**: `application/pdf`
 - **Content-Disposition**: `inline;filename="Statement10312025.pdf"`
 - **Body**: Binary PDF content
 
-### Parameter Sources
+#### Parameter Sources
 
-#### Statement ID (`id` query parameter)
+##### Statement ID (`id` query parameter)
 
 **Source API**: `GetStatements` (see Task 3 above)
 
 - The `id` field from the statement list response is used as the query parameter
 - This ID is already Base64-encoded in the response
 
-#### Filename
+##### Filename
 
 **Source**: Can be constructed from `periodEndDate` field in `GetStatements` response
 
 - Format: `Statement{MMDDYYYY}.pdf`
 - Example: For `periodEndDate: "2025-10-31"`, filename is `Statement10312025.pdf`
 
-#### Document Type
+##### Document Type
 
 **Source**: `type` field from `GetStatements` response
 
 - Common values: "STMT", "TAX", "CONFIRM"
 
-### Download Flow
+#### Download Flow
 
 1. Call `GetStatements` API to retrieve statement list
 2. Extract `id` and `periodEndDate` from desired statement
@@ -639,7 +870,7 @@ https://digital.fidelity.com/ftgw/digital/documents/PDFStatement/STMT/pdf/Statem
 4. Make GET request with session cookies
 5. Receive binary PDF response
 
-### Example Statement ID Decoding
+#### Example Statement ID Decoding
 
 The `id` parameter appears to be Base64-encoded and contains:
 
@@ -647,13 +878,13 @@ The `id` parameter appears to be Base64-encoded and contains:
 - Account identifier
 - Other metadata
 
-**Example**: `TjE4NS0yNy0xOUhGNzNWMDA5MjAwNTgxMDI3NCwyLEZDRiwzNzQ5`
+**Example**: `RVhBTVBMRV9TVEFURU1FTlRfSURfMQ==`
 
-Decoded (approximate): `N185-27-19HF73V0092005810274,2,FCF,3749`
+Decoded (synthetic example): `EXAMPLE_STATEMENT_ID_1`
 
 - Includes: Date, account reference, format code
 
-#### Notes
+##### Notes
 
 - For brokerage/investment/retirement accounts only (not credit cards)
 - Simple GET request with encoded statement ID from `GetStatements` API
@@ -662,19 +893,19 @@ Decoded (approximate): `N185-27-19HF73V0092005810274,2,FCF,3749`
 
 ---
 
-### For Credit Card Accounts
+#### For Credit Card Accounts
 
-#### API Endpoint
+##### API Endpoint
 
 ```
 POST https://digital.fidelity.com/ftgw/digital/credit-card/api/graphql
 ```
 
-#### HTTP Method
+##### HTTP Method
 
 `POST`
 
-#### Required Headers
+##### Required Headers
 
 - `Content-Type: application/json`
 - `Cookie`: [Session cookies]
@@ -682,17 +913,17 @@ POST https://digital.fidelity.com/ftgw/digital/credit-card/api/graphql
 - `apollographql-client-version: 0.0.1`
 - `Referer: https://digital.fidelity.com/ftgw/digital/portfolio/creditstatements`
 
-#### GraphQL Operation
+##### GraphQL Operation
 
 `GetStatement`
 
-#### Request Parameters
+##### Request Parameters
 
 **Query Variables:**
 
 ```json
 {
-  "accountId": "00007291638452917486",
+  "accountId": "<ACCOUNT_ID_3>",
   "statementDate": "2025-11-18"
 }
 ```
@@ -702,20 +933,20 @@ POST https://digital.fidelity.com/ftgw/digital/credit-card/api/graphql
 - `accountId`: Full credit card account number from `GetContext` API → `creditCardDetail.creditCardAcctNumber`
 - `statementDate`: Statement end date from `GetStatementsList` API → `statementEndDate` (YYYY-MM-DD format)
 
-#### Request Body Example
+##### Request Body Example
 
 ```json
 {
   "operationName": "GetStatement",
   "variables": {
-    "accountId": "00007291638452917486",
+    "accountId": "<ACCOUNT_ID_3>",
     "statementDate": "2025-11-18"
   },
   "query": "query GetStatement($accountId: String!, $statementDate: String!) {\n  getStatement(accountId: $accountId, statementDate: $statementDate) {\n    statement {\n      statementDate\n      pageContent\n      __typename\n    }\n    __typename\n  }\n}\n"
 }
 ```
 
-#### Response Structure
+##### Response Structure
 
 ```json
 {
@@ -732,12 +963,12 @@ POST https://digital.fidelity.com/ftgw/digital/credit-card/api/graphql
 }
 ```
 
-#### Important Fields
+##### Important Fields
 
 - `statementDate`: Statement date (YYYY-MM-DD)
 - `pageContent`: **Base64-encoded PDF content** - decode this to get the binary PDF
 
-#### Download Flow
+##### Download Flow
 
 1. Call `GetContext` API to get credit card account number
 2. Call `GetStatementsList` API to get available statements
@@ -748,12 +979,12 @@ POST https://digital.fidelity.com/ftgw/digital/credit-card/api/graphql
 5. Decode `pageContent` from Base64 to binary PDF
 6. Save as PDF file
 
-#### Source APIs
+##### Source APIs
 
 - **Account ID**: `GetContext` API → `creditCardDetail.creditCardAcctNumber`
 - **Statement Date**: `GetStatementsList` API → `statementEndDate`
 
-#### Notes
+##### Notes
 
 - Credit card specific API
 - Returns Base64-encoded PDF (different from brokerage direct download)
@@ -762,7 +993,7 @@ POST https://digital.fidelity.com/ftgw/digital/credit-card/api/graphql
 
 ---
 
-## Authentication & Security
+### Authentication & Security
 
 - **Cookie-based authentication** using FC, MC, RC, or SC session cookies
 - All API endpoints use HTTPS
@@ -771,16 +1002,16 @@ POST https://digital.fidelity.com/ftgw/digital/credit-card/api/graphql
 
 ---
 
-## API Flow Summary
+### API Flow Summary
 
-### For Brokerage/Investment/Retirement Accounts
+#### For Brokerage/Example account group 3/Example account group 4 Accounts
 
 1. **GetDeliveryPref** → Get email (profile)
 2. **GetContext** → Get all accounts
 3. **GetStatements** → List statements (no account ID needed)
 4. **Direct PDF Download** → Download via URL with statement ID
 
-### For Credit Card Accounts
+#### For Credit Card Accounts
 
 1. **GetDeliveryPref** → Get email (profile)
 2. **GetContext** → Get accounts and extract `creditCardDetail.creditCardAcctNumber`
@@ -789,7 +1020,7 @@ POST https://digital.fidelity.com/ftgw/digital/credit-card/api/graphql
 
 ---
 
-## File Information
+### File Information
 
 **HAR File**: `analyze/fidelity_1763597495016.har`
 
@@ -807,11 +1038,11 @@ POST https://digital.fidelity.com/ftgw/digital/credit-card/api/graphql
 
 ---
 
-## Summary
+### Summary
 
 Fidelity uses a GraphQL API architecture with separate endpoints for portfolio, credit cards, and documents. Authentication is cookie-based (FC, MC, RC, or SC cookies).
 
 **Key Differences:**
 
-- **Brokerage/Investment**: Direct PDF download via URL
-- **Credit Cards**: GraphQL API with Base64-encoded PDF content
+- **Brokerage/Example account group 3**: Direct PDF download via URL
+- **Example account group 5**: GraphQL API with Base64-encoded PDF content

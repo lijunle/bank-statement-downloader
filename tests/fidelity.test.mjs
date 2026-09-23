@@ -1,690 +1,392 @@
 /**
- * Unit tests for Fidelity Investments bank statement API implementation
- * Tests cover brokerage/investment accounts and credit card functionality
- * 
- * Note: All mock data is based on actual content from analyze/fidelity_1763597495016.har
- * to ensure tests match real API responses.
+ * Fidelity tests use synthetic examples of the current Document Center responses.
+ * Credit-card tests retain coverage of the historical GraphQL compatibility path.
  */
-
 import { describe, it, beforeEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
+import {
+    bankId, getSessionId, getProfile, getAccounts, getStatements, downloadStatement,
+} from '../bank/fidelity.mjs';
 
-// Mock global fetch
 const mockFetch = mock.fn();
 global.fetch = mockFetch;
+global.document = { cookie: '' };
 
-// Mock document.cookie for getSessionId
-global.document = {
-    cookie: 'MC=seNP9sWFaCpPqDrf7b32; other=value; _ga=GA1.1.3948206238.1874708608',
+const profile = {
+    sessionId: 'test-session',
+    profileId: 'person@example.com',
+    profileName: 'person@example.com',
 };
+const account = {
+    profile,
+    accountId: 'ACCOUNT0001',
+    accountName: 'Example investment account',
+    accountMask: '0001',
+    accountType: 'Investment',
+};
+const card = { ...account, accountType: 'CreditCard', accountId: 'synthetic-card-id' };
+const contactsUrl = 'https://digitalservices.fidelity.com/ftgw/dp/rwcf-cm-contacts/v4/customers/contacts/get';
+const accountsUrl = 'https://dpservice.fidelity.com/ftgw/dp/customer-am-acctnxt/v2/accounts';
+const statementsUrl = 'https://digitalservices.fidelity.com/ftgw/dp/retail-am-financialdoc/v1/accounts/communications/financial-documents/statements';
+const downloadUrl = 'https://digitalservices.fidelity.com/ftgw/dp/retail-am-financialdoc/v2/accounts/communications/financial-documents/download';
+const cardUrl = 'https://digital.fidelity.com/ftgw/digital/credit-card/api/graphql';
 
-// Mock atob for Base64 decoding
-global.atob = (str) => Buffer.from(str, 'base64').toString('binary');
+function respond(data, status = 200, statusText = 'OK') {
+    mockFetch.mock.mockImplementationOnce(async () => new Response(JSON.stringify(data), {
+        status, statusText, headers: { 'content-type': 'application/json; charset=UTF-8' },
+    }));
+}
 
-// Import the module after setting up mocks
-const fidelityModule = await import('../bank/fidelity.mjs');
-const { bankId, getSessionId, getProfile, getAccounts, getStatements, downloadStatement } = fidelityModule;
+function request() {
+    assert.equal(mockFetch.mock.calls.length, 1);
+    const [url, options] = mockFetch.mock.calls[0].arguments;
+    assert.equal(options.method, 'POST');
+    assert.equal(options.credentials, 'include');
+    return { url, headers: options.headers, body: JSON.parse(options.body) };
+}
+
+function documentEntry(overrides = {}) {
+    return {
+        id: 'synthetic-statement-id',
+        type: 'PI Monthly/Quarterly Statement',
+        acctNum: account.accountId,
+        periodStartDate: 1767243600,
+        periodEndDate: 1769835600,
+        generatedDate: 1769835600,
+        isHouseholded: false,
+        formatTypes: { formatType: { isPDF: true, isCSV: false } },
+        ...overrides,
+    };
+}
+
+function statementList(entries) {
+    return { statement: { docDetails: { docDetail: entries } } };
+}
+
+const pdfText = '%PDF-1.7\nsynthetic unit-test payload\n%%EOF';
+function pdfResponse(overrides = {}) {
+    return {
+        document: {
+            docDetail: {
+                contentType: 'application/pdf',
+                content: Buffer.from(pdfText).toString('base64'),
+                encoding: 'Base64',
+                deflated: 'Y',
+                updateViewedInd: true,
+                ...overrides,
+            },
+        },
+    };
+}
 
 describe('Fidelity API', () => {
     beforeEach(() => {
-        // Reset fetch mock between tests for isolation
         mockFetch.mock.resetCalls();
+        mockFetch.mock.mockImplementation(async () => { throw new Error('Unexpected fetch'); });
+        document.cookie = 'MC=test-session; other=value';
     });
 
-    describe('bankId', () => {
-        it('should return the correct bank identifier', () => {
-            assert.strictEqual(bankId, 'fidelity');
-        });
-    });
+    it('has the expected bank ID', () => assert.equal(bankId, 'fidelity'));
 
     describe('getSessionId', () => {
-        it('should extract MC cookie from document.cookie', () => {
-            const sessionId = getSessionId();
-            assert.strictEqual(sessionId, 'seNP9sWFaCpPqDrf7b32');
-        });
+        for (const cookie of ['MC', 'FC', 'RC', 'SC']) {
+            it(`extracts the ${cookie} session cookie`, () => {
+                document.cookie = `${cookie}=test-session; other=value`;
+                assert.equal(getSessionId(), 'test-session');
+            });
+        }
 
-        it('should extract FC cookie if available', () => {
-            const originalCookie = document.cookie;
-            document.cookie = 'FC=test-fc-value; other=value';
-
-            const sessionId = getSessionId();
-            assert.strictEqual(sessionId, 'test-fc-value');
-
-            document.cookie = originalCookie;
-        });
-
-        it('should throw error when no session cookie is found', () => {
-            const originalCookie = document.cookie;
+        it('reports when login is required', () => {
             document.cookie = 'other=value';
-
-            assert.throws(() => getSessionId(), /Fidelity session not found/);
-
-            document.cookie = originalCookie;
+            assert.throws(getSessionId, /Fidelity session not found.*Documents page/);
         });
     });
 
     describe('getProfile', () => {
-        it('should extract email address as profile identifier', async () => {
-            const mockResponse = {
-                data: {
-                    deliveryPrefData: {
-                        deliveryPrefInquiry: {
-                            deliveryPref: {
-                                custInformation: {
-                                    emailAddr: 'john.doe@example.com',
-                                    __typename: 'DocCustInformation',
-                                },
-                                __typename: 'DeliveryPreference',
-                            },
-                            __typename: 'DeliveryPrefInquiry',
-                        },
-                        __typename: 'DeliveryRespBody',
-                    },
-                },
-            };
-
-            mockFetch.mock.mockImplementationOnce(() =>
-                Promise.resolve({
-                    ok: true,
-                    json: () => Promise.resolve(mockResponse),
-                })
-            );
-
-            const profile = await getProfile('test-session-id');
-
-            assert.deepStrictEqual(profile, {
-                sessionId: 'test-session-id',
-                profileId: 'john.doe@example.com',
-                profileName: 'john.doe@example.com',
+        it('requests only email data and selects the primary retail email', async () => {
+            respond({ emails: [
+                { email: 'workplace@example.com', type: 'PRIMARY', custRel: 'WORKPLACE' },
+                { email: 'secondary@example.com', type: 'SECONDARY', custRel: 'RETAIL' },
+                { email: profile.profileId, type: 'PRIMARY', custRel: 'RETAIL' },
+            ] });
+            assert.deepEqual(await getProfile(profile.sessionId), profile);
+            const sent = request();
+            assert.equal(sent.url, contactsUrl);
+            assert.deepEqual(sent.body, {
+                workplaceSrcs: ['PARTICIPANT'], contactTypes: ['EMAIL'], addrDetails: ['CUSTOMER'],
             });
-
-            const calls = mockFetch.mock.calls;
-            assert.strictEqual(calls.length, 1);
-            assert.strictEqual(calls[0].arguments[0], 'https://digital.fidelity.com/ftgw/digital/documents/api/graphql');
+            assert.equal(sent.headers['appid'], 'AP162039');
+            assert.equal(sent.headers['appname'], 'Enterprise Personal Info');
+            assert.equal(sent.headers['fid-originating-app-id'], 'AP162039');
+            assert.equal(sent.headers['fid-originating-app-version'], '2');
         });
 
-        it('should throw error when API request fails', async () => {
-            mockFetch.mock.mockImplementationOnce(() =>
-                Promise.resolve({
-                    ok: false,
-                    status: 500,
-                    statusText: 'Internal Server Error',
-                })
-            );
-
-            await assert.rejects(
-                getProfile('test-session-id'),
-                /GetDeliveryPref API request failed: 500 Internal Server Error/
-            );
+        it('reports HTTP failures without falling back to a fabricated profile', async () => {
+            respond({}, 403, 'Forbidden');
+            await assert.rejects(getProfile('session'), /Failed to get profile: Fidelity API request failed: 403 Forbidden/);
         });
 
-        it('should throw error when email address is not found', async () => {
-            const mockResponse = {
-                data: {
-                    deliveryPrefData: {
-                        deliveryPrefInquiry: {
-                            deliveryPref: {
-                                custInformation: {},
-                            },
-                        },
-                    },
-                },
-            };
+        for (const data of [{}, { emails: null }, { emails: {} }]) {
+            it(`rejects a missing or malformed email list: ${JSON.stringify(data)}`, async () => {
+                respond(data);
+                await assert.rejects(getProfile('session'), /Email list not found/);
+            });
+        }
 
-            mockFetch.mock.mockImplementationOnce(() =>
-                Promise.resolve({
-                    ok: true,
-                    json: () => Promise.resolve(mockResponse),
-                })
-            );
+        it('rejects missing or ambiguous primary retail emails', async () => {
+            for (const emails of [[], [
+                { email: 'one@example.com', type: 'PRIMARY', custRel: 'RETAIL' },
+                { email: 'two@example.com', type: 'PRIMARY', custRel: 'RETAIL' },
+            ]]) {
+                respond({ emails });
+                await assert.rejects(getProfile('session'), /Expected one primary retail email/);
+            }
+        });
 
-            await assert.rejects(getProfile('test-session-id'), /Email address not found in profile response/);
+        it('rejects invalid email values', async () => {
+            respond({ emails: [{ email: '', type: 'PRIMARY', custRel: 'RETAIL' }] });
+            await assert.rejects(getProfile('session'), /Invalid primary retail email/);
+        });
+
+        it('does not treat an HTML login response as profile data', async () => {
+            mockFetch.mock.mockImplementationOnce(async () => new Response('<html>Login</html>', {
+                headers: { 'content-type': 'text/html' },
+            }));
+            await assert.rejects(getProfile('session'), /Expected a JSON response.*sign in/);
+        });
+
+        it('rejects an invalid top-level JSON structure', async () => {
+            respond([]);
+            await assert.rejects(getProfile('session'), /Invalid Fidelity API response structure/);
         });
     });
 
     describe('getAccounts', () => {
-        const mockProfile = {
-            sessionId: 'test-session',
-            profileId: 'john.doe@example.com',
-            profileName: 'john.doe@example.com',
-        };
-
-        it('should retrieve brokerage and credit card accounts', async () => {
-            const mockResponse = {
-                data: {
-                    getContext: {
-                        person: {
-                            assets: [
-                                {
-                                    acctNum: 'C39028647',
-                                    acctType: 'Brokerage',
-                                    acctSubType: 'Brokerage',
-                                    acctSubTypeDesc: 'Brokerage General Investing Person',
-                                    preferenceDetail: {
-                                        name: 'JOHN INVESTMENT',
-                                        isHidden: false,
-                                        acctGroupId: 'IA',
-                                    },
-                                    creditCardDetail: null,
-                                },
-                                {
-                                    acctNum: '0440',
-                                    acctType: 'Fidelity Credit Card',
-                                    acctSubType: 'Credit Card',
-                                    acctSubTypeDesc: 'Credit Card',
-                                    preferenceDetail: {
-                                        name: 'Visa Signature Rewards',
-                                        isHidden: false,
-                                        acctGroupId: 'CC',
-                                    },
-                                    creditCardDetail: {
-                                        creditCardAcctNumber: '22226731857822968467',
-                                        memberId: '43230226074',
-                                    },
-                                },
-                            ],
-                        },
-                    },
-                },
-            };
-
-            mockFetch.mock.mockImplementationOnce(() =>
-                Promise.resolve({
-                    ok: true,
-                    json: () => Promise.resolve(mockResponse),
-                })
-            );
-
-            const accounts = await getAccounts(mockProfile);
-
-            assert.strictEqual(accounts.length, 2);
-
-            // Brokerage account
-            assert.deepStrictEqual(accounts[0], {
-                profile: mockProfile,
-                accountId: 'C39028647',
-                accountName: 'JOHN INVESTMENT',
-                accountMask: '8647',
-                accountType: 'Investment',
+        it('uses the current REST response and retains the credit-card field mapping', async () => {
+            respond({ acctDetails: [
+                { acctNum: account.accountId, acctType: 'Brokerage', preferenceDetail: { name: account.accountName, isHidden: false } },
+                { acctNum: '0002', acctType: 'Fidelity Credit Card', preferenceDetail: { name: 'Example credit card' }, creditCardDetail: { creditCardAcctNumber: card.accountId } },
+            ] });
+            const accounts = await getAccounts(profile);
+            assert.deepEqual(accounts[0], account);
+            assert.deepEqual(accounts[1], { ...card, accountName: 'Example credit card', accountMask: '0002' });
+            const sent = request();
+            assert.equal(sent.url, accountsUrl);
+            assert(sent.body.acctCategory.split(',').includes('FidelityCreditCards'));
+            assert.deepEqual(sent.body.filters, {
+                returnCustomerAttrDetail: true,
+                returnPreferenceDetail: true,
+                returnAcctRelAttrDetail: true,
+                returnAcctIndDetail: true,
+                returnOrderedAccounts: true,
+                returnAcctStateDetail: true,
             });
-
-            // Credit card account
-            assert.deepStrictEqual(accounts[1], {
-                profile: mockProfile,
-                accountId: '22226731857822968467',
-                accountName: 'Visa Signature Rewards',
-                accountMask: '0440',
-                accountType: 'CreditCard',
-            });
+            assert.equal(sent.headers['appid'], 'AP160308');
+            assert.equal(sent.headers['fid-originating-app-version'], '1');
         });
 
-        it('should skip hidden accounts', async () => {
-            const mockResponse = {
-                data: {
-                    getContext: {
-                        person: {
-                            assets: [
-                                {
-                                    acctNum: 'D40139758',
-                                    acctType: 'Brokerage',
-                                    acctSubType: 'Brokerage',
-                                    acctSubTypeDesc: 'Brokerage Account',
-                                    preferenceDetail: {
-                                        name: 'Visible Account',
-                                        isHidden: false,
-                                    },
-                                },
-                                {
-                                    acctNum: 'E51240167',
-                                    acctType: 'Brokerage',
-                                    acctSubType: 'Brokerage',
-                                    acctSubTypeDesc: 'Hidden Account',
-                                    preferenceDetail: {
-                                        name: 'Fidelity Bloom Save',
-                                        isHidden: true,
-                                    },
-                                },
-                            ],
-                        },
-                    },
-                },
-            };
-
-            mockFetch.mock.mockImplementationOnce(() =>
-                Promise.resolve({
-                    ok: true,
-                    json: () => Promise.resolve(mockResponse),
-                })
-            );
-
-            const accounts = await getAccounts(mockProfile);
-
-            assert.strictEqual(accounts.length, 1);
-            assert.strictEqual(accounts[0].accountName, 'Visible Account');
+        it('skips hidden accounts and records without an account identifier', async () => {
+            respond({ acctDetails: [
+                { acctNum: account.accountId, acctType: 'Brokerage', preferenceDetail: { name: account.accountName } },
+                { acctNum: 'HIDDEN0002', preferenceDetail: { name: 'Hidden', isHidden: true } },
+                { acctNum: null, preferenceDetail: { name: 'Aggregate' } },
+            ] });
+            assert.deepEqual(await getAccounts(profile), [account]);
         });
 
-        it('should throw error when API request fails', async () => {
-            mockFetch.mock.mockImplementationOnce(() =>
-                Promise.resolve({
-                    ok: false,
-                    status: 401,
-                    statusText: 'Unauthorized',
-                })
-            );
+        it('uses the subtype name when no preference name is supplied', async () => {
+            respond({ acctDetails: [{ acctNum: account.accountId, acctType: 'SPS', acctSubTypeDesc: 'Stock plan' }] });
+            assert.equal((await getAccounts(profile))[0].accountName, 'Stock plan');
+        });
 
-            await assert.rejects(getAccounts(mockProfile), /GetContext API request failed: 401 Unauthorized/);
+        it('retains the account number when an optional card identifier is empty', async () => {
+            respond({ acctDetails: [{
+                acctNum: account.accountId,
+                acctType: 'Brokerage',
+                preferenceDetail: { name: account.accountName },
+                creditCardDetail: { creditCardAcctNumber: '' },
+            }] });
+            assert.deepEqual(await getAccounts(profile), [account]);
+        });
+
+        it('accepts a genuinely empty account list', async () => {
+            respond({ acctDetails: [] });
+            assert.deepEqual(await getAccounts(profile), []);
+        });
+
+        it('rejects a missing account array or malformed entry', async () => {
+            respond({ sysMsgs: {} });
+            await assert.rejects(getAccounts(profile), /Account list not found/);
+            respond({ acctDetails: [null] });
+            await assert.rejects(getAccounts(profile), /Invalid account entry/);
+        });
+
+        it('reports HTTP errors', async () => {
+            respond({}, 401, 'Unauthorized');
+            await assert.rejects(getAccounts(profile), /Failed to get accounts: Fidelity API request failed: 401 Unauthorized/);
         });
     });
 
     describe('getStatements - Brokerage', () => {
-        const mockAccount = {
-            profile: { sessionId: 'test', profileId: 'test', profileName: 'test' },
-            accountId: 'C39028647',
-            accountName: 'JOHN INVESTMENT',
-            accountMask: '7536',
-            accountType: 'Investment',
-        };
-
-        it('should retrieve brokerage statements', async () => {
-            const mockResponse = {
-                data: {
-                    getStatement: {
-                        statement: {
-                            docDetails: {
-                                docDetail: [
-                                    {
-                                        id: 'NkAzNi0yMS00MURHMTFXMTEyMzExMzYyNTU4LDIsRURHLDIyNDI',
-                                        type: 'PI Monthly/Quarterly Statement',
-                                        acctNum: '7536',
-                                        periodStartDate: 10012025,
-                                        periodEndDate: 10312025,
-                                        generatedDate: 10312025,
-                                        isHouseholded: true,
-                                        formatTypes: {
-                                            formatType: {
-                                                isPDF: true,
-                                                isCSV: true,
-                                            },
-                                        },
-                                    },
-                                    {
-                                        id: 'OlBdMy0xMS01MERIR0wyWDEyMzQyMjQ3MzY2OSwyLEVERiwxMTMz',
-                                        type: 'PI Monthly/Quarterly Statement',
-                                        acctNum: '7536',
-                                        periodStartDate: 9012025,
-                                        periodEndDate: 9302025,
-                                        generatedDate: 9302025,
-                                        isHouseholded: true,
-                                        formatTypes: {
-                                            formatType: {
-                                                isPDF: true,
-                                            },
-                                        },
-                                    },
-                                ],
-                            },
-                        },
-                    },
-                },
-            };
-
-            mockFetch.mock.mockImplementationOnce(() =>
-                Promise.resolve({
-                    ok: true,
-                    json: () => Promise.resolve(mockResponse),
-                })
-            );
-
-            const statements = await getStatements(mockAccount);
-
-            assert.strictEqual(statements.length, 2);
-            assert.deepStrictEqual(statements[0], {
-                account: mockAccount,
-                statementId: 'NkAzNi0yMS00MURHMTFXMTEyMzExMzYyNTU4LDIsRURHLDIyNDI',
-                statementDate: '2025-10-31',
-            });
-            assert.deepStrictEqual(statements[1], {
-                account: mockAccount,
-                statementId: 'OlBdMy0xMS01MERIR0wyWDEyMzQyMjQ3MzY2OSwyLEVERiwxMTMz',
-                statementDate: '2025-09-30',
-            });
+        it('maps the current response and Unix seconds to statement dates', async () => {
+            respond(statementList([documentEntry()]));
+            assert.deepEqual(await getStatements(account), [{
+                account, statementId: 'synthetic-statement-id', statementDate: '2026-01-31',
+            }]);
+            const sent = request();
+            assert.equal(sent.url, statementsUrl);
+            assert.equal(sent.body.docType, 'STMT');
+            assert.equal(sent.body.hasCryptoAccount, false);
+            assert.equal(sent.body.annuityAccountLookup, true);
+            assert.match(sent.body.startDate, /^\d{4}-\d{2}-\d{2}$/);
+            assert.match(sent.body.endDate, /^\d{4}-\d{2}-\d{2}$/);
+            assert(sent.body.startDate < sent.body.endDate);
+            assert.equal(sent.body.operationName, undefined);
         });
 
-        it('should filter out statements without PDF', async () => {
-            const mockResponse = {
-                data: {
-                    getStatement: {
-                        statement: {
-                            docDetails: {
-                                docDetail: [
-                                    {
-                                        id: 'stmt1',
-                                        acctNum: '7536',
-                                        periodEndDate: 10312025,
-                                        formatTypes: {
-                                            formatType: {
-                                                isPDF: true,
-                                            },
-                                        },
-                                    },
-                                    {
-                                        id: 'stmt2',
-                                        acctNum: '7536',
-                                        periodEndDate: 9302025,
-                                        formatTypes: {
-                                            formatType: {
-                                                isPDF: false,
-                                            },
-                                        },
-                                    },
-                                ],
-                            },
-                        },
-                    },
-                },
-            };
-
-            mockFetch.mock.mockImplementationOnce(() =>
-                Promise.resolve({
-                    ok: true,
-                    json: () => Promise.resolve(mockResponse),
-                })
-            );
-
-            const statements = await getStatements(mockAccount);
-
-            assert.strictEqual(statements.length, 1);
-            assert.strictEqual(statements[0].statementId, 'stmt1');
+        it('retains consolidated statements without an account number', async () => {
+            respond(statementList([documentEntry({ acctNum: undefined, isHouseholded: true })]));
+            assert.equal((await getStatements(account)).length, 1);
         });
 
-        it('should filter statements by account mask', async () => {
-            const mockResponse = {
-                data: {
-                    getStatement: {
-                        statement: {
-                            docDetails: {
-                                docDetail: [
-                                    {
-                                        id: 'stmt1',
-                                        acctNum: '7536',
-                                        periodEndDate: 10312025,
-                                        formatTypes: { formatType: { isPDF: true } },
-                                    },
-                                    {
-                                        id: 'stmt2',
-                                        acctNum: '9999',
-                                        periodEndDate: 9302025,
-                                        formatTypes: { formatType: { isPDF: true } },
-                                    },
-                                ],
-                            },
-                        },
-                    },
-                },
-            };
-
-            mockFetch.mock.mockImplementationOnce(() =>
-                Promise.resolve({
-                    ok: true,
-                    json: () => Promise.resolve(mockResponse),
-                })
-            );
-
-            const statements = await getStatements(mockAccount);
-
-            assert.strictEqual(statements.length, 1);
-            assert.strictEqual(statements[0].statementId, 'stmt1');
+        it('matches individual statements using the complete account ID, not just the mask', async () => {
+            respond(statementList([
+                documentEntry(),
+                documentEntry({ id: 'other-statement', acctNum: 'OTHER0001' }),
+            ]));
+            const statements = await getStatements(account);
+            assert.equal(statements.length, 1);
+            assert.equal(statements[0].statementId, 'synthetic-statement-id');
         });
-    });
 
-    describe('getStatements - Credit Card', () => {
-        const mockAccount = {
-            profile: { sessionId: 'test', profileId: 'test', profileName: 'test' },
-            accountId: '22226731857822968467',
-            accountName: 'Visa Signature Rewards',
-            accountMask: '9339',
-            accountType: 'CreditCard',
-        };
+        it('filters out non-PDF formats', async () => {
+            respond(statementList([
+                documentEntry(),
+                documentEntry({ id: 'csv', formatTypes: { formatType: { isPDF: false, isCSV: true } } }),
+            ]));
+            assert.equal((await getStatements(account)).length, 1);
+        });
 
-        it('should retrieve credit card statements', async () => {
-            const mockResponse = {
-                data: {
-                    getStatementsList: {
-                        statements: [
-                            {
-                                statementName: 'November 2025 - Oct-18 to Nov-18 (pdf)',
-                                statementStartDate: '2025-10-18',
-                                statementEndDate: '2025-11-18',
-                            },
-                            {
-                                statementName: 'October 2025 - Sep-19 to Oct-17 (pdf)',
-                                statementStartDate: '2025-09-19',
-                                statementEndDate: '2025-10-17',
-                            },
-                        ],
-                        isPaperlessEnrolled: 'Already Enrolled',
-                    },
-                },
-            };
+        it('uses generatedDate only when periodEndDate is missing', async () => {
+            respond(statementList([documentEntry({ periodEndDate: undefined })]));
+            assert.equal((await getStatements(account))[0].statementDate, '2026-01-31');
+        });
 
-            mockFetch.mock.mockImplementationOnce(() =>
-                Promise.resolve({
-                    ok: true,
-                    json: () => Promise.resolve(mockResponse),
-                })
-            );
+        it('accepts a genuinely empty statement list', async () => {
+            respond(statementList([]));
+            assert.deepEqual(await getStatements(account), []);
+        });
 
-            const statements = await getStatements(mockAccount);
+        it('reports missing statement data rather than returning a success-shaped empty list', async () => {
+            respond({ statement: { sysMsgs: { sysMsg: [{ type: 'ERROR' }] } } });
+            await assert.rejects(getStatements(account), /Statement list not found/);
+        });
 
-            assert.strictEqual(statements.length, 2);
-            assert.deepStrictEqual(statements[0], {
-                account: mockAccount,
-                statementId: '2025-11-18',
-                statementDate: '2025-11-18',
+        for (const [entry, error] of [
+            [null, /Invalid statement entry/],
+            [documentEntry({ formatTypes: undefined }), /Statement format metadata/],
+            [documentEntry({ acctNum: undefined }), /Account identifier missing/],
+            [documentEntry({ acctNum: 1234, isHouseholded: true }), /Invalid account identifier/],
+            [documentEntry({ id: '' }), /Statement identifier missing/],
+            [documentEntry({ periodEndDate: '2026-01-31' }), /expected Unix seconds/],
+            [documentEntry({ periodEndDate: -1 }), /expected Unix seconds/],
+            [documentEntry({ periodEndDate: 1.5 }), /expected Unix seconds/],
+            [documentEntry({ periodEndDate: 9000000000000 }), /Invalid Fidelity statement date/],
+        ]) {
+            it(`rejects malformed statement data: ${error.source}`, async () => {
+                respond(statementList([entry]));
+                await assert.rejects(getStatements(account), error);
             });
-            assert.deepStrictEqual(statements[1], {
-                account: mockAccount,
-                statementId: '2025-10-17',
-                statementDate: '2025-10-17',
-            });
+        }
 
-            const calls = mockFetch.mock.calls;
-            const requestBody = JSON.parse(calls[0].arguments[1].body);
-            assert.strictEqual(requestBody.operationName, 'GetStatementsList');
-            assert.strictEqual(requestBody.variables.accountId, '22226731857822968467');
-        });
-
-        it('should include required headers for credit card API', async () => {
-            const mockResponse = {
-                data: {
-                    getStatementsList: {
-                        statements: [],
-                    },
-                },
-            };
-
-            mockFetch.mock.mockImplementationOnce(() =>
-                Promise.resolve({
-                    ok: true,
-                    json: () => Promise.resolve(mockResponse),
-                })
-            );
-
-            await getStatements(mockAccount);
-
-            const calls = mockFetch.mock.calls;
-            const headers = calls[0].arguments[1].headers;
-            assert.strictEqual(headers['apollographql-client-name'], 'credit-card');
-            assert.strictEqual(headers['apollographql-client-version'], '0.0.1');
+        it('reports HTTP errors', async () => {
+            respond({}, 500, 'Internal Server Error');
+            await assert.rejects(getStatements(account), /Failed to get statements: Fidelity API request failed: 500/);
         });
     });
 
     describe('downloadStatement - Brokerage', () => {
-        const mockStatement = {
-            account: {
-                accountType: 'Investment',
-                accountId: 'C39028647',
-            },
-            statementId: 'NkAzNi0yMS00MURHMTFXMTEyMzExMzYyNTU4LDIsRURHLDIyNDI',
-            statementDate: '2025-10-31',
-        };
+        const statement = { account, statementId: 'opaque/id+=', statementDate: '2026-01-31' };
 
-        it('should download brokerage statement PDF via direct URL', async () => {
-            const mockPdfBlob = new Blob(['mock pdf content'], { type: 'application/pdf' });
-
-            mockFetch.mock.mockImplementationOnce(() =>
-                Promise.resolve({
-                    ok: true,
-                    blob: () => Promise.resolve(mockPdfBlob),
-                })
-            );
-
-            const blob = await downloadStatement(mockStatement);
-
-            assert.strictEqual(blob, mockPdfBlob);
-
-            const calls = mockFetch.mock.calls;
-            assert.strictEqual(calls.length, 1);
-            assert.match(
-                calls[0].arguments[0],
-                /https:\/\/digital\.fidelity\.com\/ftgw\/digital\/documents\/PDFStatement\/STMT\/pdf\/Statement10312025\.pdf\?id=/
-            );
+        it('posts the unmodified opaque ID and decodes the actual PDF bytes', async () => {
+            respond(pdfResponse());
+            const blob = await downloadStatement(statement);
+            assert.equal(blob.type, 'application/pdf');
+            assert.equal(await blob.text(), pdfText);
+            assert.equal(blob.size, Buffer.byteLength(pdfText));
+            const sent = request();
+            assert.equal(sent.url, downloadUrl);
+            assert.deepEqual(sent.body, { id: statement.statementId, formatType: 'PDF', docType: 'STMT', acctType: 'Brokerage' });
+            assert.equal(sent.headers['fid-originating-app-version'], '1.0');
         });
 
-        it('should encode statement ID in URL', async () => {
-            mockFetch.mock.mockImplementationOnce(() =>
-                Promise.resolve({
-                    ok: true,
-                    blob: () => Promise.resolve(new Blob()),
-                })
-            );
+        for (const [data, error] of [
+            [{}, /No PDF content/],
+            [pdfResponse({ content: '' }), /No PDF content/],
+            [pdfResponse({ contentType: 'text/html' }), /not a PDF/],
+            [pdfResponse({ encoding: 'gzip' }), /Unsupported Fidelity statement encoding/],
+            [pdfResponse({ content: Buffer.from('<html>Login</html>').toString('base64') }), /not a PDF/],
+            [pdfResponse({ content: '@invalid-base64@' }), /Failed to download statement/],
+        ]) {
+            it(`rejects malformed download payloads: ${error.source}`, async () => {
+                respond(data);
+                await assert.rejects(downloadStatement(statement), error);
+            });
+        }
 
-            await downloadStatement(mockStatement);
-
-            const calls = mockFetch.mock.calls;
-            const url = calls[0].arguments[0];
-            assert.match(url, /id=NkAzNi0yMS00MURHMTFXMTEyMzExMzYyNTU4LDIsRURHLDIyNDI/);
-        });
-
-        it('should throw error when PDF download fails', async () => {
-            mockFetch.mock.mockImplementationOnce(() =>
-                Promise.resolve({
-                    ok: false,
-                    status: 404,
-                    statusText: 'Not Found',
-                })
-            );
-
-            await assert.rejects(downloadStatement(mockStatement), /PDF download failed: 404 Not Found/);
+        it('reports HTTP errors', async () => {
+            respond({}, 404, 'Not Found');
+            await assert.rejects(downloadStatement(statement), /Failed to download statement: Fidelity API request failed: 404 Not Found/);
         });
     });
 
-    describe('downloadStatement - Credit Card', () => {
-        const mockStatement = {
-            account: {
-                accountType: 'CreditCard',
-                accountId: '22226731857822968467',
-            },
-            statementId: '2025-11-18',
-            statementDate: '2025-11-18',
-        };
-
-        it('should download credit card statement PDF via GraphQL with Base64 decoding', async () => {
-            // Create a simple PDF-like Base64 string
-            const mockPdfBase64 = Buffer.from('mock pdf binary content').toString('base64');
-            const mockResponse = {
-                data: {
-                    getStatement: {
-                        statement: {
-                            statementDate: '2025-11-18',
-                            pageContent: mockPdfBase64,
-                            __typename: 'Statement',
-                        },
-                        __typename: 'GetStatementResponse',
-                    },
-                },
-            };
-
-            mockFetch.mock.mockImplementationOnce(() =>
-                Promise.resolve({
-                    ok: true,
-                    json: () => Promise.resolve(mockResponse),
-                })
-            );
-
-            const blob = await downloadStatement(mockStatement);
-
-            assert.strictEqual(blob.type, 'application/pdf');
-
-            const calls = mockFetch.mock.calls;
-            assert.strictEqual(calls[0].arguments[0], 'https://digital.fidelity.com/ftgw/digital/credit-card/api/graphql');
-
-            const requestBody = JSON.parse(calls[0].arguments[1].body);
-            assert.strictEqual(requestBody.operationName, 'GetStatement');
-            assert.strictEqual(requestBody.variables.accountId, '22226731857822968467');
-            assert.strictEqual(requestBody.variables.statementDate, '2025-11-18');
+    describe('credit-card compatibility', () => {
+        it('retains the GraphQL statement-list request and mapping', async () => {
+            respond({ data: { getStatementsList: { statements: [
+                { statementEndDate: '2026-01-18' },
+                { statementEndDate: '2025-12-18' },
+            ] } } });
+            assert.deepEqual(await getStatements(card), [
+                { account: card, statementId: '2026-01-18', statementDate: '2026-01-18' },
+                { account: card, statementId: '2025-12-18', statementDate: '2025-12-18' },
+            ]);
+            const sent = request();
+            assert.equal(sent.url, cardUrl);
+            assert.equal(sent.body.operationName, 'GetStatementsList');
+            assert.equal(sent.body.variables.accountId, card.accountId);
+            assert.equal(sent.headers['apollographql-client-name'], 'credit-card');
+            assert.equal(sent.headers['apollographql-client-version'], '0.0.1');
         });
 
-        it('should include required headers for credit card PDF download', async () => {
-            const mockResponse = {
-                data: {
-                    getStatement: {
-                        statement: {
-                            pageContent: Buffer.from('test').toString('base64'),
-                        },
-                    },
-                },
-            };
-
-            mockFetch.mock.mockImplementationOnce(() =>
-                Promise.resolve({
-                    ok: true,
-                    json: () => Promise.resolve(mockResponse),
-                })
-            );
-
-            await downloadStatement(mockStatement);
-
-            const calls = mockFetch.mock.calls;
-            const headers = calls[0].arguments[1].headers;
-            assert.strictEqual(headers['apollographql-client-name'], 'credit-card');
-            assert.strictEqual(headers['apollographql-client-version'], '0.0.1');
+        it('accepts an empty credit-card statement list', async () => {
+            respond({ data: { getStatementsList: { statements: [] } } });
+            assert.deepEqual(await getStatements(card), []);
         });
 
-        it('should throw error when pageContent is missing', async () => {
-            const mockResponse = {
-                data: {
-                    getStatement: {
-                        statement: {
-                            statementDate: '2025-11-18',
-                        },
-                    },
-                },
-            };
-
-            mockFetch.mock.mockImplementationOnce(() =>
-                Promise.resolve({
-                    ok: true,
-                    json: () => Promise.resolve(mockResponse),
-                })
-            );
-
-            await assert.rejects(downloadStatement(mockStatement), /No PDF content in credit card statement response/);
+        it('retains the GraphQL download and Base64 decoding', async () => {
+            respond({ data: { getStatement: { statement: { pageContent: Buffer.from(pdfText).toString('base64') } } } });
+            const statement = { account: card, statementId: '2026-01-18', statementDate: '2026-01-18' };
+            const blob = await downloadStatement(statement);
+            assert.equal(blob.type, 'application/pdf');
+            assert.equal(await blob.text(), pdfText);
+            const sent = request();
+            assert.equal(sent.url, cardUrl);
+            assert.equal(sent.body.operationName, 'GetStatement');
+            assert.deepEqual(sent.body.variables, { accountId: card.accountId, statementDate: '2026-01-18' });
+            assert.equal(sent.headers['apollographql-client-name'], 'credit-card');
+            assert.equal(sent.headers['apollographql-client-version'], '0.0.1');
         });
 
-        it('should throw error when credit card API request fails', async () => {
-            mockFetch.mock.mockImplementationOnce(() =>
-                Promise.resolve({
-                    ok: false,
-                    status: 500,
-                    statusText: 'Internal Server Error',
-                })
-            );
+        it('reports missing credit-card PDF content', async () => {
+            respond({ data: { getStatement: { statement: {} } } });
+            await assert.rejects(downloadStatement({ account: card }), /No PDF content in credit card statement response/);
+        });
 
-            await assert.rejects(
-                downloadStatement(mockStatement),
-                /Credit card PDF download failed: 500 Internal Server Error/
-            );
+        it('reports credit-card list and download HTTP failures', async () => {
+            respond({}, 500, 'Internal Server Error');
+            await assert.rejects(getStatements(card), /GetStatementsList API request failed: 500/);
+            respond({}, 500, 'Internal Server Error');
+            await assert.rejects(downloadStatement({ account: card }), /Credit card PDF download failed: 500/);
         });
     });
 });
