@@ -131,6 +131,24 @@ describe('American Express contract regressions', () => {
         }
     });
 
+    it('rejects invalid GraphQL envelopes with operation-specific errors', async () => {
+        for (const envelope of [null, [], false, 42, 'invalid']) {
+            respond(envelope);
+            await assert.rejects(getStatements(checking), {
+                message: 'Failed to get statements: Invalid GraphQL response for bankingAccountDocuments',
+            });
+
+            respond(envelope);
+            await assert.rejects(downloadStatement({
+                account: checking,
+                statementId: 'test-document',
+                statementDate: '2026-08-31T00:00:00.000Z',
+            }), {
+                message: 'Failed to download statement: Invalid GraphQL response for accountDocument',
+            });
+        }
+    });
+
     it('rejects incomplete checking responses rather than reporting no statements', async () => {
         for (const data of [{}, { productAccountByAccountNumberProxy: null }, { productAccountByAccountNumberProxy: {} }]) {
             respond({ data });

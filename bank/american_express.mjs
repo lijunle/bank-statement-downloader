@@ -252,6 +252,9 @@ async function makeGraphQLRequest(operationName, variables, query) {
 
     const data = await response.json();
 
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        throw new Error(`Invalid GraphQL response for ${operationName}`);
+    }
     if (data.errors?.length) {
         throw new Error(`GraphQL error in ${operationName}`);
     }

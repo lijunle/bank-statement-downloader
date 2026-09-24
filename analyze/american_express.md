@@ -341,24 +341,41 @@ const data = await response.json();
 
 // Get all statements with download URLs
 const allStatements = [
-  ...data.billingStatements.recentStatements,
-  ...data.billingStatements.olderStatements,
+  ...(data.billingStatements.recentStatements ?? []),
+  ...(data.billingStatements.olderStatements ?? []),
 ];
 
-// Process statements
-const statements = allStatements.map((stmt) => {
-  const pdfUrl = stmt.downloadOptions.STATEMENT_PDF;
+const statements = allStatements.flatMap((stmt) => {
+  const options = stmt.downloadOptions;
+  // Additional-card periods may offer transaction exports without a PDF.
+  if (
+    options &&
+    !Object.prototype.hasOwnProperty.call(options, "STATEMENT_PDF") &&
+    ["EXCEL", "CSV", "QUICKBOOKS", "QUICKEN"].some(
+      (format) => typeof options[format] === "string" && options[format].length > 0
+    )
+  ) {
+    return [];
+  }
 
-  return {
+  const pdfUrl = options?.STATEMENT_PDF;
+  if (typeof pdfUrl !== "string" || !URL.canParse(pdfUrl)) {
+    throw new Error("Invalid credit card statement download URL");
+  }
+
+  return [{
     date: stmt.statementEndDate,
-    pdfUrl: stmt.downloadOptions.STATEMENT_PDF,
-    excelUrl: stmt.downloadOptions.EXCEL,
-    csvUrl: stmt.downloadOptions.CSV,
-    quickbooksUrl: stmt.downloadOptions.QUICKBOOKS,
-    quickenUrl: stmt.downloadOptions.QUICKEN,
-  };
+    pdfUrl,
+    excelUrl: options.EXCEL,
+    csvUrl: options.CSV,
+    quickbooksUrl: options.QUICKBOOKS,
+    quickenUrl: options.QUICKEN,
+  }];
 });
 ```
+
+This example illustrates grouping and format selection. The implementation also
+validates the PDF endpoint and statement dates before returning the shared contract.
 
 ---
 
