@@ -2,7 +2,6 @@
  * American Express API implementation for retrieving bank statements
  * Supports both credit cards and checking accounts
  * @see analyze/american_express.md
- * @see analyze/american_express_checking.md
  */
 
 /** @type {string} */
@@ -38,10 +37,43 @@ async function makeAuthenticatedRequest(url, options = {}) {
     });
 
     if (!response.ok) {
-        throw new Error(`American Express API request failed: ${response.status} ${response.statusText} at ${url}`);
+        throw new Error(`American Express API request failed: ${response.status} ${response.statusText}`);
     }
 
     return response;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {string}
+ */
+function getCreditCardDownloadUrl(value) {
+    if (typeof value !== 'string' || !URL.canParse(value)) {
+        throw new Error('Invalid credit card statement download URL');
+    }
+    const url = new URL(value);
+    const prefix = '/api/servicing/v1/documents/statements/';
+    if (url.origin !== BASE_URL || url.username || url.password ||
+        !url.pathname.startsWith(prefix) || url.pathname.length === prefix.length) {
+        throw new Error('Invalid credit card statement download URL');
+    }
+    return value;
+}
+
+/**
+ * Reject common login/error payloads; full PDF readability is verified separately.
+ * @param {Blob} blob
+ * @returns {Promise<Blob>}
+ */
+async function validatePdf(blob) {
+    if (blob.size === 0) {
+        throw new Error('Downloaded PDF is empty');
+    }
+    if (blob.type.split(';')[0].trim().toLowerCase() !== 'application/pdf' ||
+        await blob.slice(0, 5).text() !== '%PDF-') {
+        throw new Error('Expected a PDF statement, but received a different document');
+    }
+    return blob;
 }
 
 /**
@@ -220,8 +252,11 @@ async function makeGraphQLRequest(operationName, variables, query) {
 
     const data = await response.json();
 
-    if (data.errors) {
-        throw new Error(`GraphQL error: ${JSON.stringify(data.errors)}`);
+    if (data.errors?.length) {
+        throw new Error(`GraphQL error in ${operationName}`);
+    }
+    if (!data.data || typeof data.data !== 'object') {
+        throw new Error(`Invalid GraphQL response for ${operationName}`);
     }
 
     return data.data;
@@ -257,28 +292,38 @@ async function getCreditCardStatements(account) {
         throw new Error('Invalid response format from ReadAccountActivity API');
     }
 
-    // Combine recent and older statements
+    const { recentStatements, olderStatements } = data.billingStatements;
+    if ((!Array.isArray(recentStatements) && !Array.isArray(olderStatements)) ||
+        (recentStatements !== undefined && !Array.isArray(recentStatements)) ||
+        (olderStatements !== undefined && !Array.isArray(olderStatements))) {
+        throw new Error('Invalid response format from ReadAccountActivity API');
+    }
+
     const allStatements = [
-        ...(data.billingStatements.recentStatements || []),
-        ...(data.billingStatements.olderStatements || []),
+        ...(recentStatements ?? []),
+        ...(olderStatements ?? []),
     ];
 
-    // Transform to Statement format
-    const statements = allStatements.map(stmt => {
-        // Extract encrypted ID from the PDF URL
-        const pdfUrl = stmt.downloadOptions?.STATEMENT_PDF || '';
-        const match = pdfUrl.match(/\/statements\/([A-F0-9]+)\?/);
-        const encryptedId = match ? match[1] : '';
-
-        // Parse date from YYYY-MM-DD format
+    const statements = allStatements.flatMap(stmt => {
+        const options = stmt?.downloadOptions;
+        // Additional cards can expose transaction exports without a billing PDF.
+        if (options && !Object.prototype.hasOwnProperty.call(options, 'STATEMENT_PDF') &&
+            ['EXCEL', 'CSV', 'QUICKBOOKS', 'QUICKEN'].some(format => typeof options[format] === 'string' && options[format].length > 0)) {
+            return [];
+        }
+        const pdfUrl = getCreditCardDownloadUrl(stmt?.downloadOptions?.STATEMENT_PDF);
         const dateStr = stmt.statementEndDate;
-        const statementDate = dateStr ? new Date(dateStr).toISOString() : new Date().toISOString();
+        const date = new Date(dateStr);
+        if (typeof dateStr !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr) ||
+            !Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== dateStr) {
+            throw new Error('Invalid credit card statement date');
+        }
 
-        return {
+        return [{
             account,
-            statementId: encryptedId || `${account.accountId}-${dateStr}`,
-            statementDate,
-        };
+            statementId: pdfUrl,
+            statementDate: date.toISOString(),
+        }];
     });
 
     // Sort by date descending (newest first)
@@ -321,15 +366,22 @@ async function getCheckingStatements(account) {
         },
     }, query);
 
-    const statements = /** @type {any[]} */ (data.productAccountByAccountNumberProxy?.statements || []);
+    const statements = data.productAccountByAccountNumberProxy?.statements;
+    if (!Array.isArray(statements)) {
+        throw new Error('Invalid checking statement list response');
+    }
 
-    // Transform to Statement format
-    return statements.map(/** @param {any} stmt */(stmt) => {
-        // Create date from year and month
-        const year = stmt.year || new Date().getFullYear();
-        const month = stmt.month || 1;
-        // Set to last day of the month as statement date
-        const statementDate = new Date(year, month, 0).toISOString();
+    return statements.map(stmt => {
+        if (!stmt || typeof stmt.identifier !== 'string' || !stmt.identifier.trim() ||
+            !/^\d{4}$/.test(String(stmt.year)) || !/^\d{1,2}$/.test(String(stmt.month))) {
+            throw new Error('Invalid checking statement identifier or period');
+        }
+        const year = Number(stmt.year);
+        const month = Number(stmt.month);
+        if (year < 1000 || month < 1 || month > 12) {
+            throw new Error('Invalid checking statement period');
+        }
+        const statementDate = new Date(Date.UTC(year, month, 0)).toISOString();
 
         return {
             account,
@@ -347,49 +399,33 @@ async function getCheckingStatements(account) {
  */
 export async function getStatements(account) {
     try {
-        // Determine account type from the accountId format
-        // Checking accounts have accountNumberProxy format (long base64 string with underscores/hyphens)
-        // Credit cards have short alphanumeric accountToken
-        const isCheckingAccount = account.accountId.includes('_') || account.accountId.includes('-') || account.accountId.length > 20;
-
-        if (isCheckingAccount) {
+        if (account.accountType === 'Checking') {
             return await getCheckingStatements(account);
-        } else {
+        } else if (account.accountType === 'CreditCard') {
             return await getCreditCardStatements(account);
         }
+        throw new Error(`Unsupported American Express account type: ${account.accountType}`);
     } catch (error) {
         const err = /** @type {Error} */ (error);
-        throw new Error(`Failed to get statements for account ${account.accountId}: ${err.message}`);
+        throw new Error(`Failed to get statements: ${err.message}`);
     }
 }
 
 /**
  * Downloads a credit card statement PDF
  * @param {import('./bank.types').Statement} statement
- * @param {string} accountKey
  * @returns {Promise<Blob>}
  */
-async function downloadCreditCardStatement(statement, accountKey) {
-    // Construct the download URL using the encrypted statement ID
-    const downloadUrl = `${BASE_URL}/api/servicing/v1/documents/statements/${statement.statementId}?account_key=${accountKey}&client_id=OneAmex`;
-
-    // Download the PDF
+async function downloadCreditCardStatement(statement) {
+    const downloadUrl = getCreditCardDownloadUrl(statement.statementId);
     const response = await makeAuthenticatedRequest(downloadUrl, {
         method: 'GET',
         headers: {
-            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'sec-fetch-dest': 'document',
-            'sec-fetch-mode': 'navigate',
+            'accept': 'application/pdf',
         },
     });
 
-    const blob = await response.blob();
-
-    if (blob.size === 0) {
-        throw new Error('Downloaded PDF is empty');
-    }
-
-    return blob;
+    return validatePdf(await response.blob());
 }
 
 /**
@@ -416,8 +452,12 @@ async function downloadCheckingStatement(statement) {
     }, query);
 
     const statementData = data.checkingAccountStatement;
-    if (!statementData || !statementData.content) {
+    if (!statementData || typeof statementData.content !== 'string' || !statementData.content) {
         throw new Error('No statement content returned from API');
+    }
+    if (typeof statementData.contentType !== 'string' ||
+        statementData.contentType.split(';')[0].trim().toLowerCase() !== 'application/pdf') {
+        throw new Error('Expected a PDF statement, but received a different document');
     }
 
     // Decode base64 content to binary
@@ -431,11 +471,7 @@ async function downloadCheckingStatement(statement) {
     // Create blob with PDF MIME type
     const blob = new Blob([bytes], { type: 'application/pdf' });
 
-    if (blob.size === 0) {
-        throw new Error('Downloaded PDF is empty');
-    }
-
-    return blob;
+    return validatePdf(blob);
 }
 
 /**
@@ -445,25 +481,15 @@ async function downloadCheckingStatement(statement) {
  */
 export async function downloadStatement(statement) {
     try {
-        // Determine account type from the accountId format
-        const isCheckingAccount = statement.account.accountId.includes('_') || statement.account.accountId.includes('-') || statement.account.accountId.length > 20;
-
-        if (isCheckingAccount) {
+        if (statement.account.accountType === 'Checking') {
             return await downloadCheckingStatement(statement);
-        } else {
-            // For credit cards, we need the account key
-            const accountsData = await extractAccountsFromOverview();
-            const accountData = accountsData.find(acc => acc.accountToken === statement.account.accountId);
-
-            if (!accountData) {
-                throw new Error(`Could not find account data for account ${statement.account.accountId}`);
-            }
-
-            return await downloadCreditCardStatement(statement, accountData.accountKey);
+        } else if (statement.account.accountType === 'CreditCard') {
+            return await downloadCreditCardStatement(statement);
         }
+        throw new Error(`Unsupported American Express account type: ${statement.account.accountType}`);
     } catch (error) {
         const err = /** @type {Error} */ (error);
-        throw new Error(`Failed to download statement ${statement.statementId}: ${err.message}`);
+        throw new Error(`Failed to download statement: ${err.message}`);
     }
 }
 

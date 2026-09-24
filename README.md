@@ -21,7 +21,7 @@ Bank Statement Downloader is a Chrome/Edge browser extension designed to simplif
 
 | Bank                                 | List Accounts | List Statements | Download Statements |
 | :----------------------------------- | :-----------: | :-------------: | :-----------------: |
-| American Express                     |      ✅       |       ✅        |         ✅          |
+| American Express [^5]                |      ✅       |       ✅        |         ✅          |
 | Bank of America                      |      ✅       |       ✅        |         ✅          |
 | BMO (Bank of Montreal)               |      ✅       |       ✅        |         ✅          |
 | Chase Bank                           |      ✅       |       ✅        |         ✅          |
@@ -49,6 +49,7 @@ Bank Statement Downloader is a Chrome/Edge browser extension designed to simplif
 [^2]: Fidelity can combine multiple investment accounts into one statement PDF. Open Fidelity's [Documents page](https://digitalservices.fidelity.com/navigate/ent-documentcenter/statements) for investment and retirement statements, or the credit-card account's Statements tab in Portfolio for credit-card statements.
 [^3]: First Tech FCU combines checking and savings accounts into a single statement PDF file.
 [^4]: Wise does not provide pre-generated statements; statements are generated on-demand for each month.
+[^5]: American Express supports credit-card and Rewards Checking statement PDFs, not savings accounts or tax documents. Some additional-card accounts offer only transaction exports and therefore have no PDF statements to list.
 
 ## License
 

@@ -1,9 +1,7 @@
 /**
  * Unit tests for American Express bank statement API implementation
  * Tests cover both credit card and checking account functionality
- * 
- * Note: All mock __INITIAL_STATE__ data is based on actual content extracted from
- * analyze/american_express.har to ensure tests match real API responses.
+ * Fixtures cover the observed HTML/Transit, REST, and GraphQL response structures.
  */
 
 import { describe, it, beforeEach, mock } from 'node:test';
@@ -25,6 +23,145 @@ global.document = {
 // Import the module after setting up mocks
 const amexModule = await import('../bank/american_express.mjs');
 const { bankId, getSessionId, getProfile, getAccounts, getStatements, downloadStatement } = amexModule;
+
+describe('American Express contract regressions', () => {
+    const profile = { sessionId: 'test-session', profileId: 'test-profile', profileName: 'Test User' };
+    const card = { profile, accountId: 'CARD123', accountName: 'Test Card', accountMask: '12345', accountType: 'CreditCard' };
+    const checking = { profile, accountId: 'checking_proxy', accountName: 'Test Checking', accountMask: '1234', accountType: 'Checking' };
+    const pdfUrl = 'https://global.americanexpress.com/api/servicing/v1/documents/statements/opaque-id?client_id=OneAmex&account_key=test-key&format=pdf';
+    const pdf = new Blob(['%PDF-1.7\nsynthetic test document'], { type: 'application/pdf' });
+
+    beforeEach(() => {
+        mockFetch.mock.resetCalls();
+    });
+
+    function respond(data) {
+        mockFetch.mock.mockImplementationOnce(async () => ({ ok: true, json: async () => data }));
+    }
+
+    it('preserves the complete API-provided credit-card download URL', async () => {
+        respond({ billingStatements: { recentStatements: [{
+            statementEndDate: '2026-08-31',
+            downloadOptions: { STATEMENT_PDF: pdfUrl },
+        }], olderStatements: [] } });
+        const statements = await getStatements(card);
+        assert.equal(statements[0].statementId, pdfUrl);
+        assert.equal(statements[0].statementDate, '2026-08-31T00:00:00.000Z');
+    });
+
+    it('downloads the provided card URL without refetching overview or rebuilding its query', async () => {
+        mockFetch.mock.mockImplementationOnce(async () => ({ ok: true, blob: async () => pdf }));
+        const result = await downloadStatement({ account: card, statementId: pdfUrl, statementDate: '2026-08-31T00:00:00.000Z' });
+        assert.equal(result, pdf);
+        assert.equal(mockFetch.mock.calls.length, 1);
+        assert.equal(mockFetch.mock.calls[0].arguments[0], pdfUrl);
+    });
+
+    it('rejects missing or invalid card download URLs instead of inventing statement IDs', async () => {
+        for (const url of [undefined, '', 'not-a-url', 'https://example.com/statement.pdf']) {
+            respond({ billingStatements: { recentStatements: [{
+                statementEndDate: '2026-08-31',
+                downloadOptions: { STATEMENT_PDF: url },
+            }] } });
+            await assert.rejects(getStatements(card), /Invalid credit card statement download URL/);
+        }
+    });
+
+    it('rejects missing or impossible credit-card dates instead of substituting today', async () => {
+        for (const date of [undefined, '', '2026-02-30']) {
+            respond({ billingStatements: { recentStatements: [{
+                statementEndDate: date,
+                downloadOptions: { STATEMENT_PDF: pdfUrl },
+            }] } });
+            await assert.rejects(getStatements(card), /Invalid credit card statement date/);
+        }
+    });
+
+    it('omits additional-card periods that offer only transaction exports', async () => {
+        const exportOnly = {
+            statementEndDate: '2026-08-31',
+            downloadOptions: {
+                EXCEL: 'https://global.americanexpress.com/transactions.xlsx',
+                CSV: 'https://global.americanexpress.com/transactions.csv',
+                QUICKBOOKS: 'https://global.americanexpress.com/transactions.qbo',
+                QUICKEN: 'https://global.americanexpress.com/transactions.qfx',
+            },
+        };
+        respond({ billingStatements: { recentStatements: [exportOnly] } });
+        assert.deepEqual(await getStatements(card), []);
+
+        respond({ billingStatements: { recentStatements: [exportOnly, {
+            statementEndDate: '2026-07-31',
+            downloadOptions: { STATEMENT_PDF: pdfUrl },
+        }] } });
+        const statements = await getStatements(card);
+        assert.equal(statements.length, 1);
+        assert.equal(statements[0].statementId, pdfUrl);
+        assert.equal(statements[0].statementDate, '2026-07-31T00:00:00.000Z');
+    });
+
+    it('routes credit cards by accountType rather than token length or punctuation', async () => {
+        respond({ billingStatements: { recentStatements: [], olderStatements: [] } });
+        assert.deepEqual(await getStatements({ ...card, accountId: 'long_card-token-with-more-than-twenty-characters' }), []);
+        assert.equal(JSON.parse(mockFetch.mock.calls[0].arguments[1].body).view, 'STATEMENTS');
+    });
+
+    it('routes checking lists and downloads by accountType rather than proxy shape', async () => {
+        const account = { ...checking, accountId: 'ABC123' };
+        respond({ data: { productAccountByAccountNumberProxy: { statements: [] } } });
+        assert.deepEqual(await getStatements(account), []);
+        respond({ data: { checkingAccountStatement: { contentType: 'application/pdf', content: btoa('%PDF-1.7\nsynthetic') } } });
+        await downloadStatement({ account, statementId: 'test-document', statementDate: '2026-08-31T00:00:00.000Z' });
+        assert.equal(JSON.parse(mockFetch.mock.calls[0].arguments[1].body).operationName, 'bankingAccountDocuments');
+        assert.equal(JSON.parse(mockFetch.mock.calls[1].arguments[1].body).operationName, 'accountDocument');
+    });
+
+    it('keeps checking month-end dates independent of the machine time zone', async () => {
+        const originalTimezone = process.env.TZ;
+        try {
+            process.env.TZ = 'Asia/Tokyo';
+            respond({ data: { productAccountByAccountNumberProxy: { statements: [{
+                identifier: 'test-document', year: '2026', month: '08',
+            }] } } });
+            const statements = await getStatements(checking);
+            assert.equal(statements[0].statementDate, '2026-08-31T00:00:00.000Z');
+        } finally {
+            if (originalTimezone === undefined) delete process.env.TZ;
+            else process.env.TZ = originalTimezone;
+        }
+    });
+
+    it('rejects incomplete checking responses rather than reporting no statements', async () => {
+        for (const data of [{}, { productAccountByAccountNumberProxy: null }, { productAccountByAccountNumberProxy: {} }]) {
+            respond({ data });
+            await assert.rejects(getStatements(checking), /Invalid.*checking statement/i);
+        }
+    });
+
+    it('rejects missing identifiers and invalid checking statement periods', async () => {
+        for (const statement of [
+            { year: '2026', month: '08' },
+            { identifier: 'test-document', month: '08' },
+            { identifier: 'test-document', year: '2026', month: null },
+            { identifier: 'test-document', year: '2026', month: '13' },
+        ]) {
+            respond({ data: { productAccountByAccountNumberProxy: { statements: [statement] } } });
+            await assert.rejects(getStatements(checking), /Invalid checking statement/);
+        }
+    });
+
+    it('rejects HTML or mislabeled error payloads instead of downloading them as PDFs', async () => {
+        for (const blob of [
+            new Blob(['<html>Login required</html>'], { type: 'text/html' }),
+            new Blob(['{"error":"expired"}'], { type: 'application/pdf' }),
+        ]) {
+            mockFetch.mock.mockImplementationOnce(async () => ({ ok: true, blob: async () => blob }));
+            await assert.rejects(downloadStatement({ account: card, statementId: pdfUrl, statementDate: '2026-08-31T00:00:00.000Z' }), /Expected a PDF/);
+        }
+        respond({ data: { checkingAccountStatement: { contentType: 'text/html', content: btoa('<html>Login required</html>') } } });
+        await assert.rejects(downloadStatement({ account: checking, statementId: 'test-document', statementDate: '2026-08-31T00:00:00.000Z' }), /Expected a PDF/);
+    });
+});
 
 describe('American Express API', () => {
     beforeEach(() => {
@@ -274,7 +411,7 @@ describe('American Express API', () => {
             assert.strictEqual(statements.length, 3);
             assert.strictEqual(
                 statements[0].statementId,
-                '154DD48166489B7E6253FD1382E7353B69656380BDC975709659978149C3D86E4CD320AD51B6EEF66D41D2F1173DFFD735CC5C2106B93665E2F5E1797570687F4FB9F20389CD3DF2E6186F38EDF4D833F47EEB0FF57418C3360F781987527D92F1DE498B015F101CB125E621B3E4394F'
+                mockResponse.billingStatements.recentStatements[0].downloadOptions.STATEMENT_PDF
             );
             assert.strictEqual(statements[0].statementDate, new Date('2025-10-21').toISOString());
             assert.strictEqual(statements[0].account, mockAccount);
@@ -387,7 +524,7 @@ describe('American Express API', () => {
                 statements[0].statementId,
                 'URN:AXP:SCS:BANKING_STATEMENTS:DOC:BS:aa2a79dd-d58c-50f5-0b72-5455b45839f0-0456'
             );
-            assert.strictEqual(statements[0].statementDate, new Date(2025, 10, 0).toISOString()); // Oct 31, 2025 (last day of month)
+            assert.strictEqual(statements[0].statementDate, '2025-10-31T00:00:00.000Z');
             assert.strictEqual(statements[0].account, mockAccount);
 
             // Verify GraphQL call
@@ -439,36 +576,16 @@ describe('American Express API', () => {
 
         const mockStatement = {
             account: mockAccount,
-            statementId:
-                '154DD48166489B7E6253FD1382E7353B69656380BDC975709659978149C3D86E4CD320AD51B6EEF66D41D2F1173DFFD735CC5C2106B93665E2F5E1797570687F4FB9F20389CD3DF2E6186F38EDF4D833F47EEB0FF57418C3360F781987527D92F1DE498B015F101CB125E621B3E4394F',
-            statementDate: new Date('2025-10-21'),
+            statementId: 'https://global.americanexpress.com/api/servicing/v1/documents/statements/TEST-PDF?account_key=test-key&client_id=OneAmex',
+            statementDate: '2025-10-21T00:00:00.000Z',
         };
 
         it('should download credit card statement PDF', async () => {
-            const mockPdfBlob = new Blob(['PDF content'], { type: 'application/pdf' });
-
-            const mockOverviewHtml = `
-        <script>
-          window.__INITIAL_STATE__ = "[\\\"~#iM\\\",[\\\"axp-consumer-context-switcher\\\",[\\\"~#iM\\\",[\\\"products\\\",[\\\"~#iM\\\",[\\\"registry\\\",[\\\"~#iM\\\",[\\\"types\\\",[\\\"~#iM\\\",[\\\"CARD_PRODUCT\\\",[[\\\"^ \\\",\\\"accountToken\\\",\\\"M8RKTYU6DXH3FCT\\\",\\\"accountKey\\\",\\\"97264F5317FE9A3B8E60F971E2BF621C\\\"]]]]]]]]]]]]";
-          window.__holocron = {};
-        </script>
-      `;
-
-            let callCount = 0;
-            mockFetch.mock.mockImplementation(() => {
-                callCount++;
-                if (callCount === 1) {
-                    return Promise.resolve({
-                        ok: true,
-                        text: () => Promise.resolve(mockOverviewHtml),
-                    });
-                } else {
-                    return Promise.resolve({
-                        ok: true,
-                        blob: () => Promise.resolve(mockPdfBlob),
-                    });
-                }
-            });
+            const mockPdfBlob = new Blob(['%PDF-1.7\nsynthetic test document'], { type: 'application/pdf' });
+            mockFetch.mock.mockImplementationOnce(async () => ({
+                ok: true,
+                blob: async () => mockPdfBlob,
+            }));
 
             const blob = await downloadStatement(mockStatement);
 
@@ -477,42 +594,19 @@ describe('American Express API', () => {
 
             // Verify download API call
             const calls = mockFetch.mock.calls;
-            assert.strictEqual(calls.length, 2);
-            assert.ok(calls[1].arguments[0].includes('/api/servicing/v1/documents/statements/'));
-            assert.strictEqual(calls[1].arguments[1].method, 'GET');
-            assert.strictEqual(calls[1].arguments[1].credentials, 'include');
-
-            const downloadUrl = calls[1].arguments[0];
-            assert.ok(downloadUrl.includes(mockStatement.statementId));
-            assert.ok(downloadUrl.includes('account_key=97264F5317FE9A3B8E60F971E2BF621C'));
-            assert.ok(downloadUrl.includes('client_id=OneAmex'));
+            assert.strictEqual(calls.length, 1);
+            assert.strictEqual(calls[0].arguments[0], mockStatement.statementId);
+            assert.strictEqual(calls[0].arguments[1].method, 'GET');
+            assert.strictEqual(calls[0].arguments[1].credentials, 'include');
         });
 
         it('should throw error when downloaded PDF is empty', async () => {
             const mockEmptyBlob = new Blob([], { type: 'application/pdf' });
 
-            const mockOverviewHtml = `
-        <script>
-          window.__INITIAL_STATE__ = "[\\\"~#iM\\\",[\\\"axp-consumer-context-switcher\\\",[\\\"~#iM\\\",[\\\"products\\\",[\\\"~#iM\\\",[\\\"registry\\\",[\\\"~#iM\\\",[\\\"types\\\",[\\\"~#iM\\\",[\\\"CARD_PRODUCT\\\",[[\\\"^ \\\",\\\"accountToken\\\",\\\"M8RKTYU6DXH3FCT\\\",\\\"accountKey\\\",\\\"97264F5317FE9A3B8E60F971E2BF621C\\\"]]]]]]]]]]]]";
-          window.__holocron = {};
-        </script>
-      `;
-
-            let callCount = 0;
-            mockFetch.mock.mockImplementation(() => {
-                callCount++;
-                if (callCount === 1) {
-                    return Promise.resolve({
-                        ok: true,
-                        text: () => Promise.resolve(mockOverviewHtml),
-                    });
-                } else {
-                    return Promise.resolve({
-                        ok: true,
-                        blob: () => Promise.resolve(mockEmptyBlob),
-                    });
-                }
-            });
+            mockFetch.mock.mockImplementationOnce(async () => ({
+                ok: true,
+                blob: async () => mockEmptyBlob,
+            }));
 
             await assert.rejects(downloadStatement(mockStatement), /Downloaded PDF is empty/);
         });
@@ -530,11 +624,11 @@ describe('American Express API', () => {
         const mockStatement = {
             account: mockAccount,
             statementId: 'URN:AXP:SCS:BANKING_STATEMENTS:DOC:BS:aa2a79dd-d58c-50f5-0b72-5455b45839f0-0456',
-            statementDate: new Date(2025, 10, 0),
+            statementDate: '2025-10-31T00:00:00.000Z',
         };
 
         it('should download checking statement PDF via GraphQL', async () => {
-            const pdfContent = 'PDF content';
+            const pdfContent = '%PDF-1.7\nsynthetic test document';
             const base64Content = Buffer.from(pdfContent).toString('base64');
 
             const mockResponse = {
@@ -619,6 +713,3 @@ describe('American Express API', () => {
         });
     });
 });
-
-
-

@@ -1,8 +1,27 @@
 # American Express API Analysis
 
-**Analysis as of:** 2025-11-29
+**Analysis as of:** 2026-09-24
 
 This document describes the API endpoints and requirements for accessing American Express account and statement data.
+
+## Scope and evidence
+
+Bank identifier: `american_express`. The current investigation covered the
+authenticated overview, one consumer credit card's statements, and Rewards
+Checking financial statements. The credit-card REST and checking GraphQL
+sequences below were observed through the bank's own UI. Both returned PDF
+documents corresponding to the selected account and period.
+
+Supplemental extension requests covered a Business Gold card and an Additional
+Platinum card. The business card used the same REST sequence and provided a PDF.
+The additional card returned transaction-export links without a statement PDF;
+this does not establish that all additional-card accounts have the same
+eligibility.
+
+Savings, loans, accessible PDFs, transaction exports, and tax-document downloads
+remain outside this scope. The module only exposes credit-card and Rewards
+Checking statement PDFs, not savings accounts or tax documents. Historical
+descriptions below are not evidence that other variants currently work.
 
 ## Quick Start
 
@@ -15,7 +34,10 @@ To download statements programmatically:
 
 **Key Point**: The `ReadAccountActivity.web.v1` API provides complete download URLs - you don't need to construct them manually.
 
-**Important**: The `__INITIAL_STATE__` is a JSON-encoded string that must be parsed with `JSON.parse()` before regex extraction. Accounts may appear multiple times in the state data, so deduplication is required.
+**Important**: `__INITIAL_STATE__` is a JSON-encoded string containing Transit
+JSON. The example expressions below operate on the string after `JSON.parse()`;
+the implementation instead matches escaped quotes in the original JSON string
+literal. Do not mix these representations. Deduplicate repeated account tokens.
 
 ## Base URLs
 
@@ -39,9 +61,11 @@ https://global.americanexpress.com
 
 ## Authentication Requirements
 
-All API requests require the following authentication cookies and headers:
+Requests use the browser's authenticated cookies with `credentials: "include"`.
+The following cookie and header names come from historical captures; their
+presence does not establish that every one is necessary.
 
-### Required Cookies
+### Session cookies
 
 - `aat`: JWT access token (contains user authentication and session information)
 - `pflt`: Platform token (JWT with long expiry)
@@ -52,7 +76,13 @@ All API requests require the following authentication cookies and headers:
 - `device-id`: Unique device identifier
 - `agent-id`: User agent identifier
 
-### Required Headers
+`JSESSIONID` remained readable through `document.cookie` on the authenticated
+Amex page and supplies the extension's session identifier. Do not copy cookie
+values into the report or manually reproduce them in headers. Reopening the
+site can require login and two-step verification again; token expiry timing was
+not measured in this investigation.
+
+### Request headers
 
 Varies by endpoint. Common headers include:
 
@@ -67,7 +97,10 @@ Varies by endpoint. Common headers include:
 
 **Purpose**: Retrieve all credit cards and accounts with balances, details, and metadata.
 
-**Source**: Account data is **embedded in the HTML page**, not available via a separate API endpoint.
+**Source used by the integration**: Account data is embedded in the overview
+HTML. The UI also calls `POST /ReadCustomerOverviewSecondary.web.v1` on the
+functions domain; that observation does not establish a replacement account-list
+contract.
 
 **Method**: Navigate to the overview/dashboard page and extract `window.__INITIAL_STATE__` from the HTML.
 
@@ -90,8 +123,13 @@ https://global.americanexpress.com/overview
 **Data Location**:
 
 - Embedded in `<script>` tag as: `window.__INITIAL_STATE__ = "..."`
-- Format: Transit JSON encoding (~220KB of serialized state data)
+- Format: Transit JSON encoding, including `~#iM` maps
 - Contains: All accounts, balances, card details, rewards points, recent activity, etc.
+
+The captured `GET /overview` returned HTTP 200 with `text/html`. A fresh
+authenticated fetch still contained the expected assignment and account fields,
+while the hydrated page no longer exposed the state script through
+`document.scripts`. Fetch the HTML rather than assuming the live DOM retains it.
 
 **Accessing Account Data**:
 
@@ -171,13 +209,20 @@ The account information is embedded in Transit-encoded format within `window.__I
 
 6. **Use the tokens**:
    - `accountToken` is used in the request body when calling `ReadAccountActivity.web.v1`
-   - `accountKey` is used as `account_key` query parameter when downloading PDFs
+   - `accountKey` identifies the selected card in page URLs. For PDF downloads,
+     retain the `account_key` already supplied in the complete download URL.
 
 ---
 
 ### 2. List Statements and Get Download URLs
 
 **Purpose**: Retrieve all available billing statements with download URLs for PDF, Excel, CSV, and other formats.
+
+**Observed UI action**: Open "Go to PDF Statements" at
+`https://global.americanexpress.com/activity/statements`. In this session, the
+activity page's client-side link initially left the recent-activity view visible;
+normal navigation to that same link URL loaded the statements page. This is
+separate from the extension's API flow.
 
 **Endpoint**: `POST https://functions.americanexpress.com/ReadAccountActivity.web.v1`
 
@@ -206,6 +251,35 @@ The account information is embedded in Transit-encoded format within `window.__I
 - `view`: Must be `"STATEMENTS"` to get billing statements
 
 **Response Structure**:
+
+The observed response was HTTP 200 with `application/json`. Its first recent
+statement had `statementEndDate: "2026-09-20"` and the download formats shown
+below. "Recent Statements" and "Older Statements" are separate UI groups backed
+by the response arrays, not a guarantee of one statement for every calendar
+month.
+
+The business-card response contained `billingStatements.recentStatements` with
+one entry and omitted `olderStatements`; an omitted group is not an API failure.
+The additional-card response contained the same dated entry structure but offered
+only `EXCEL`, `CSV`, `QUICKBOOKS`, and `QUICKEN` in `downloadOptions`:
+
+```json
+{
+  "statementEndDate": "2026-09-20",
+  "downloadOptions": {
+    "EXCEL": "<transaction-export-url>",
+    "CSV": "<transaction-export-url>",
+    "QUICKBOOKS": "<transaction-export-url>",
+    "QUICKEN": "<transaction-export-url>"
+  }
+}
+```
+
+Such export-only entries are valid activity periods, not downloadable billing
+PDFs. Exclude them from the PDF statement list rather than inventing a PDF URL or
+failing the account. If no PDF entries remain, the extension displays its normal
+"No statements available" message. A malformed or empty `STATEMENT_PDF` value,
+when actually supplied, is still an error.
 
 ```json
 {
@@ -274,11 +348,9 @@ const allStatements = [
 // Process statements
 const statements = allStatements.map((stmt) => {
   const pdfUrl = stmt.downloadOptions.STATEMENT_PDF;
-  const match = pdfUrl.match(/\/statements\/([A-F0-9]+)\?/);
 
   return {
     date: stmt.statementEndDate,
-    encryptedId: match ? match[1] : null,
     pdfUrl: stmt.downloadOptions.STATEMENT_PDF,
     excelUrl: stmt.downloadOptions.EXCEL,
     csvUrl: stmt.downloadOptions.CSV,
@@ -324,6 +396,11 @@ https://global.americanexpress.com/api/servicing/v1/documents/statements/{ENCRYP
 - Content-Disposition: `attachment; filename=2025-10-21.pdf`
 - Binary PDF file data
 
+The bank's Download button opens a file-type dialog. Selecting "Billing
+Statement (PDF)" and confirming issued a GET to the URL supplied by the list
+response and returned HTTP 200 with `application/pdf`. No secondary download
+domain was observed in this flow.
+
 ---
 
 ## Additional API Endpoints
@@ -340,13 +417,19 @@ https://global.americanexpress.com/api/servicing/v1/documents/statements/{ENCRYP
 
 ---
 
-## Security Considerations
+## Authentication and error boundaries
 
-1. **Session Management**: The `aat` token expires quickly (300 seconds) and needs to be refreshed
-2. **Device Fingerprinting**: Multiple cookies (`blueboxvalues`, `MATFSI`, `_abck`, `bm_sz`) are used for fraud detection
-3. **CSRF Protection**: The session requires valid `gatekeeper` and `amexsessioncookie` values
-4. **TLS Required**: All connections must use HTTPS with TLS 1.3
-5. **Rate Limiting**: Requests should include proper delays to avoid triggering bot detection (Akamai protection)
+- Historical notes attributed device-management roles to cookies such as
+  `blueboxvalues`, `MATFSI`, `_abck`, and `bm_sz`. Their exact necessity, token
+  lifetimes, and CSRF roles were not isolated by this investigation.
+- Use the existing browser session over HTTPS. No minimum TLS version, required
+  retry delay, or rate-limit threshold was established.
+- Login redirects or authentication errors are not empty statement lists.
+  Missing response structures, malformed statement dates, and missing download
+  references should be surfaced as errors rather than replaced with today's date
+  or a fabricated identifier.
+- HTTP 200 alone does not establish a successful PDF download. A login page or
+  JSON error must not be saved as a statement.
 
 ---
 
@@ -354,7 +437,7 @@ https://global.americanexpress.com/api/servicing/v1/documents/statements/{ENCRYP
 
 1. User logs in through web browser to `https://www.americanexpress.com`
 2. After successful authentication, cookies are set including `aat`, `pflt`, `amexsessioncookie`, `JSESSIONID`
-3. The `JSESSIONID` cookie is used as a stable session identifier for caching (more stable than `amexsessioncookie` which changes frequently)
+3. The implementation uses the readable `JSESSIONID` cookie as its session cache identifier; comparative cookie stability was not measured
 4. Navigate to `/overview` page and extract `accountToken` and `accountKey` from `window.__INITIAL_STATE__`
 5. Call `ReadAccountActivity.web.v1` with `view: "STATEMENTS"` to get all statements with download URLs
 6. Download statement PDFs directly using the URLs from `downloadOptions.STATEMENT_PDF`
@@ -364,11 +447,11 @@ https://global.americanexpress.com/api/servicing/v1/documents/statements/{ENCRYP
 ## Implementation Notes
 
 - **Authentication**: All API calls require valid session cookies obtained from browser login
-- **Bot Detection**: Akamai and PerimeterX protection active - use real browser cookies and headers
-- **Encryption**: Statement IDs and account keys are encrypted per-session and provided by APIs
+- **Browser controls**: Complete login and any verification through the bank UI; do not conceal automation signals or bypass fraud controls
+- **Opaque values**: Account keys, proxies, and document references come from the bank. Do not infer their lifetime or encoding requirements from their appearance
 - **Download URLs**: Always use the complete URLs from `ReadAccountActivity.web.v1` response - don't construct manually
 - **File Format**: PDFs use Content-Disposition header with filename format `YYYY-MM-DD.pdf`
-- **Transit JSON**: Account data in `/overview` uses Transit encoding format - regex extraction works reliably
+- **Transit JSON**: The existing extraction matched this overview. Its assumptions about field order and nearby account details remain format dependencies, not a general Transit decoder
 - **Alternative Formats**: Excel, CSV, QuickBooks, and Quicken formats available via `downloadOptions`
 
 ---
@@ -388,9 +471,9 @@ American Express checking accounts use a different API architecture than credit 
 **Account Identification**:
 
 - **Parameter Name**: `accountNumberProxy` (in API requests) or `opaqueAccountId` (in page URLs)
-- **Format**: Base64-encoded string (e.g., `YZ_8mnopqRSTU3vw_x45AbCdEfGhIjKl67Mn89OpQrS`)
+- **Format**: Opaque URL-safe string (e.g., `YZ_8mnopqRSTU3vw_x45AbCdEfGhIjKl67Mn89OpQrS`); do not decode it or use its shape to infer the account type
 - **Product Class**: `PERSONAL_CHECKING_ACCOUNT`
-- **Page URL Path**: `/banking/*` (vs `/myca/*` for credit cards)
+- **Page URL Path**: `/banking/*` (vs `/activity/*` for the observed credit-card statement pages)
 
 ### GraphQL Operations
 
@@ -458,6 +541,25 @@ All checking account operations use `POST https://graph.americanexpress.com/grap
 - `year`: Statement year
 - `month`: Statement month (null for tax documents)
 
+The observed `FINANCIAL` request returned HTTP 200 with 33 monthly statements.
+The latest entry was:
+
+```json
+{
+  "document": "MONTHLY_STATEMENT",
+  "identifier": "<checking-document-urn>",
+  "type": "FINANCIAL",
+  "year": "2026",
+  "month": "08",
+  "__typename": "CheckingAccountStatement"
+}
+```
+
+The UI grouped these documents by year, with an "August 2026" link. No pagination
+arguments were used for this list. A separate request with `type: "TAX"` returned
+a tax-document entry whose `month` was null; the integration intentionally requests
+only `FINANCIAL`, and tax downloads were not exercised.
+
 #### 3. Download Statement PDF
 
 **Operation**: `accountDocument`
@@ -492,6 +594,12 @@ All checking account operations use `POST https://graph.americanexpress.com/grap
 - Decode the base64 `content` field to get the PDF file
 - Response size is typically 500KB-1MB per statement
 
+Clicking "August 2026" issued this operation and returned HTTP 200 with
+`checkingAccountStatement.contentType: "application/pdf"`. The bank decoded
+`content` and opened a Blob URL in a PDF viewer. This is not a second PDF GET to
+an Amex REST endpoint. The captured document content decoded to a readable PDF;
+do not treat the historical typical response-size range as a validity check.
+
 ### Checking Account Usage Flow
 
 1. **Get account information**: Use `checkingAccountDataQuery` operation to retrieve account status, product name, and basic details
@@ -503,10 +611,41 @@ All checking account operations use `POST https://graph.americanexpress.com/grap
 | Feature            | Credit Cards                         | Checking Accounts                   |
 | ------------------ | ------------------------------------ | ----------------------------------- |
 | API Type           | REST (functions.americanexpress.com) | GraphQL (graph.americanexpress.com) |
-| Account ID         | Card index (0, 1, 2)                 | accountNumberProxy (base64 string)  |
-| Account Info       | ReadCustomerOverviewSecondary.web.v1 | checkingAccountDataQuery operation  |
-| Statements List    | Embedded in account response         | bankingAccountDocuments operation   |
-| Statement Download | ReadStatementsPDF.web.v1             | accountDocument operation (base64)  |
+| Account ID         | `accountToken` from overview         | `opaqueAccountId` / `accountNumberProxy` |
+| Account Info       | Overview HTML; secondary UI requests | `checkingAccountDataQuery` operation |
+| Statements List    | `ReadAccountActivity.web.v1`, `view: "STATEMENTS"` | `bankingAccountDocuments` operation |
+| Statement Download | Complete `downloadOptions.STATEMENT_PDF` URL | `accountDocument` operation (base64) |
 | Download Format    | Direct PDF download (binary)         | Base64-encoded in JSON response     |
-| Page URL Path      | /myca/\*                             | /banking/\*                         |
-| Product Class      | CARD                                 | PERSONAL_CHECKING_ACCOUNT           |
+| Page URL Path      | /activity/\*                         | /banking/\*                         |
+| Product Class      | CARD_PRODUCT                         | PERSONAL_CHECKING_ACCOUNT           |
+
+## Shared contract mapping
+
+These mappings implement the [shared bank contract](../bank/bank.types.ts).
+
+- **Profile:** `sessionId` and `profileId` use the readable `JSESSIONID` cookie.
+  `profileName` comes from `embossed_name` in the fetched overview state, with
+  `American Express` as the existing display fallback when no name is present.
+- **Credit-card account:** `accountToken` maps to `accountId`,
+  `product.description` to `accountName`, and `display_account_number` to the
+  five-digit `accountMask`. `accountType` is `CreditCard`.
+- **Checking account:** the overview's `opaqueAccountId` maps to `accountId` and
+  supplies GraphQL's `accountNumberProxy`. `productDisplayName` and
+  `displayAccountNumber` supply the name and four-digit mask. `accountType` is
+  `Checking`; API routing uses this type, not the opaque ID's length or alphabet.
+- **Credit-card statement:** the complete `STATEMENT_PDF` URL is retained as
+  `statementId`, preserving its query parameters. `statementEndDate` must be a
+  valid `YYYY-MM-DD` and becomes a UTC ISO timestamp. Downloads use that URL
+  directly; no additional overview request or reconstructed account key is needed.
+  Entries that only offer transaction exports are omitted.
+- **Checking statement:** `identifier` maps to `statementId`. Valid `year` and
+  `month` values become the last calendar day of that month at UTC midnight,
+  independent of the machine's time zone. The source provides a month, not a
+  precise statement-closing timestamp.
+- **Downloaded Blob:** REST returns the PDF body; GraphQL returns base64 that is
+  decoded into bytes. Both paths reject empty or non-PDF-looking payloads. MIME
+  type and a PDF signature are only runtime guards, not proof of readability.
+
+The credit-card statement identifier previously retained only a hex substring
+and rebuilt the URL. Reload the extension and refresh accounts when moving to
+the full-URL representation so cached legacy identifiers are not reused.
