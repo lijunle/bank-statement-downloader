@@ -1,13 +1,15 @@
 # Bank Development Workflow
 
-Use this workflow to add a bank, investigate an API change, or validate an existing
+Use this workflow to add a bank, investigate an API change, or update an existing
 integration. Follow the [repository principles](../AGENTS.md) and consult the
 [architecture](architecture.md) for component responsibilities.
 
 The sequence is: prepare an authenticated session, collect network evidence, update
 the bank analysis, implement the change, and verify a real statement download.
 For an existing integration, reuse evidence that is still valid and repeat only the
-stages needed for the task. A live-validation-only task does not require code changes.
+stages needed for the task. For a live-validation-only task, start directly with
+the standalone [Extension Validation Workflow](extension-validation.md); it does
+not require development, code changes, unit tests, or new API analysis.
 
 ## 1. Prepare an authenticated session
 
@@ -97,40 +99,14 @@ checks do not replace the real download in the next stage.
 
 ## 5. Verify a real statement download
 
-Use the actual extension, not just a direct API call or injected bank function:
-
-1. Reload the unpacked extension after source edits, then reload the bank tab so
-   its content script is current. Confirm that the authenticated session still works.
-2. Keep the bank tab active and open the extension's toolbar action. An extension
-   popup opened as an ordinary tab can see a different active-tab context.
-3. Click the popup's Refresh accounts button to clear the extension's account and
-   statement caches; reloading the bank page alone does not clear them. Expand the
-   intended account and verify its statement list.
-4. Select a user-approved statement and wait for the actual browser download.
-5. Inspect the downloaded file locally with a PDF viewer or parser. Confirm that
-   it is a readable PDF, not an HTML login page, JSON error, or truncated payload,
-   and that it corresponds to the selected account or consolidated group and period.
-6. Repeat for distinct flows within the agreed scope. Leave untested variants
-   explicitly unverified.
-
-A success message, HTTP 200, `.pdf` filename, file-size threshold, or `%PDF-` prefix
-alone is insufficient. Record the file's byte count and the local readability and
-selection checks without publishing statement contents, personal filenames, or
-account details. Keep downloaded statements outside the repository.
-
-Report the live-validation outcome and exercised scope in the task response.
-Distinguish an observed implementation failure from a blocked session that needs
-user intervention. Keep test-run results out of the bank analysis; update it only
-when testing provides new API observations.
-
-When diagnosing an extension failure, inspect both the bank page and the extension
-service worker's console using the browser skill. The `requestFetch` route makes
-requests in the background worker, so they may not appear in the bank tab's network
-list. The pinned CLI's network tools are page-scoped; do not assume they accept
-`--serviceWorkerId`. If worker network details are needed, inspect the worker in
-Chrome DevTools and retain only sanitized findings.
+Run the standalone [Extension Validation Workflow](extension-validation.md) as
+the final acceptance step for the changed integration. Carry forward the agreed
+bank/account scope, relevant API findings, and the source-change context so that
+the extension and host content scripts are reloaded when needed. Use that
+workflow's acceptance standards, diagnostics, and sanitized result template
+rather than treating local tests or direct API calls as live acceptance.
 
 Return to evidence collection if a failure exposes an unknown API behavior.
-Report local test results separately from live-validation results, and do not
-claim broader coverage than was exercised. Remove only task-created temporary
-artifacts when no longer needed; do not clear the user's profile or downloads.
+After an implementation fix, rerun the affected validation scope. In the
+development handoff, report local check/test results separately from the
+live-validation outcome and its untested or inapplicable operations.
