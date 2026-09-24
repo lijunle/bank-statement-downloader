@@ -1,6 +1,6 @@
 ---
 name: chrome-extension-control
-description: Control of unpacked Chrome extensions over the Chrome DevTools Protocol, covering machine setup, launching a visible Chrome instance, loading the extension into a session, extension-owned pages, toolbar action triggering, extension service worker evaluation, and console and network inspection of extension activity.
+description: Control unpacked Chrome extensions over the Chrome DevTools Protocol by launching real Chrome directly with a persistent profile, connecting the pinned CLI to it, loading the extension, triggering its toolbar action, and inspecting extension pages, service workers, console output, and network activity.
 ---
 
 # Chrome Extension Control
@@ -11,139 +11,192 @@ Three steps, in order. Each depends on the previous one.
 2. **[Launch the Chrome instance](#2-launch-the-chrome-instance)** — once per working session.
 3. **[Operate the extension](#3-operate-the-extension)** — the actual work.
 
-Except for the installation command below, examples run from the directory containing
-this `SKILL.md`, not the repository root. Use
-`./node_modules/.bin/chrome-devtools` in place of the bare `chrome-devtools` in upstream
-examples, or the binary's absolute path from another directory. On Windows, call
-`.\node_modules\.bin\chrome-devtools.cmd` from PowerShell, or use a Bash shell.
+The workflow and its invariants are platform-independent. Platform-specific commands belong in
+the reference subsection at the end of each step so another reference, such as macOS, can be
+added without changing how the workflow is explained.
 
 ## 1. Machine setup
 
 Do this once per machine, with the user's approval.
 
-Google Chrome and a Node.js version supported by the pinned CLI must be installed.
-This skill uses the installed Chrome to load unpacked extensions over the DevTools Protocol.
+Google Chrome 149 or newer and a Node.js version supported by the pinned CLI must be installed.
+This skill drives the real Chrome installation rather than a bundled browser, so that banks see
+a genuine Chrome build and unpacked extensions can load over an existing DevTools Protocol
+connection. Chrome versions before 149 cannot use the extension tools through `--browserUrl`;
+update Chrome instead of falling back to having the CLI launch it over a pipe.
 
 Install the pinned CLI, which replaces upstream's global-install instructions and keeps the CLI
 and its bundled documentation on the version in the skill's `package.json` and
-`package-lock.json`. Run this command from the repository root:
+`package-lock.json`. Reinstall whenever those manifests change.
+
+The CLI dependency belongs to this skill rather than the repository root. Run skill installation
+from the repository root, then run later CLI commands from the directory containing this
+`SKILL.md` or use the CLI's absolute path.
+
+### Windows PowerShell reference
+
+Verify Chrome, then install the skill-local dependency from the repository root:
 
 ```powershell
+(Get-Item "C:\Program Files\Google\Chrome\Application\chrome.exe").VersionInfo.ProductVersion
 npm ci --prefix .\.agents\skills\chrome-extension-control
 ```
 
-Re-run it whenever those manifests change. For the examples below, switch to the skill
-directory, or use the CLI's absolute path; root dependencies do not provide this CLI.
-
-No separate command creates the browser profile; step 2 creates it on first launch. After that
-first launch, sign in to any site the profile needs while the browser is visible. The profile
-can retain cookies, but sessions can expire or require MFA again. Verify authentication each
-working session and ask the user to sign in when needed. Unpacked extensions loaded by this
-tool do not persist this way, which is why loading the extension belongs to step 3.
-
 ## 2. Launch the Chrome instance
 
-Extension tools require the daemon to launch Chrome itself over a pipe connection.
-`--browserUrl`, `--wsEndpoint`, and `--autoConnect` do not support extension tools in the pinned
-version, so an already-running Chrome cannot be adopted.
+Launch Chrome directly and then connect the CLI daemon to its TCP DevTools endpoint. Do not let
+`chrome-devtools` launch Chrome. Separating the browser and daemon lifecycles:
 
-Start the daemon explicitly, before any other command:
+- avoids Puppeteer's default launch arguments;
+- lets the user keep using the visible browser while the daemon disconnects or restarts;
+- allows the user to see and control exactly which executable, profile, address, and port are in
+  use.
 
-```sh
-./node_modules/.bin/chrome-devtools start \
-  --categoryExtensions=true \
-  --userDataDir "$HOME/.cache/Google/Chrome/bank-sync" \
-  --ignoreDefaultChromeArg=--headless=new \
-  --ignoreDefaultChromeArg=--hide-scrollbars
-```
+Use a dedicated persistent profile. Chrome 136 and newer require a non-default profile for remote
+debugging. Bind CDP to loopback, ask Chrome to allocate an available port, and discover the
+browser through `DevToolsActivePort` in the profile directory.
 
-Why each part matters:
-
-- `--categoryExtensions=true` enables every extension command used in step 3.
-- `--userDataDir` keeps the profile, and its sign-in cookies, across restarts. Without it the
-  daemon defaults to `--isolated` and discards everything when the browser closes.
-- Removing `--headless=new` is what makes the browser visible. Upstream's `## Service Management`
-  section recommends `start --headless=false`, but that does not work here: the pinned CLI
-  silently drops both `--headless=false` and `--no-headless`, because the server-side default for
-  `headless` is `false` while the CLI-side default is `true`, and the serializer skips any value
-  equal to the server-side default. Removing Chrome's own argument is the supported path.
-- Removing `--hide-scrollbars` restores normal scrolling controls in the visible browser.
-  Keep the default `--enable-automation` flag.
+Do not infer profile ownership by parsing process command lines. First probe the endpoint recorded
+in `DevToolsActivePort`; reuse it when it responds and its browser WebSocket path matches the
+file. Otherwise remove the stale file, launch Chrome, and wait with a timeout for Chrome to
+publish a new working endpoint. Chrome's own process-singleton mechanism prevents two browser
+instances from owning the same profile.
 
 A visible browser is mandatory for bank work, which needs sign-in, CAPTCHA, consent, and
-multi-factor prompts.
+multi-factor prompts. The profile retains browser data but does not guarantee that authentication
+will remain valid; ask the user to sign in again when needed.
 
-Never let a tool command start the daemon implicitly. An implicit start uses default options and
-produces a headless browser.
+Do not continue until all browser postconditions hold:
 
-### Trigger the launch and verify visibility
+- `DevToolsActivePort` identifies the same browser as the DevTools version endpoint;
+- the endpoint responds on loopback;
+- a visible browser window exists.
 
-`start` only configures the daemon. Chrome does not launch until the first command arrives, so
-issue one:
+Check the current CLI daemon before changing it. Reuse it when it already targets this browser
+endpoint with the extension category enabled. Otherwise preserve it and create a session-scoped
+daemon. Use the same session ID for all later commands and stop only that scoped daemon when work
+ends. Never let a command start the daemon implicitly because it would lose the selected endpoint
+and extension category.
 
-```sh
-./node_modules/.bin/chrome-devtools list_pages
-```
+Verify the daemon with both an ordinary page command and an extension command.
+`No extensions installed` is valid before step 3 and proves that the browser-level extension API
+is available.
 
-`status` reports `--headless` even when Chrome is visible, so it cannot confirm visibility. Check
-the Chrome process instead, and do not continue until a window exists:
+### Windows PowerShell reference
+
+The reference below reuses a working browser endpoint or launches Chrome and waits for a fresh
+one, then connects a scoped CLI daemon. If `status` already reports the same browser URL and the
+extension category, reuse that daemon and omit `--sessionId` from later commands.
 
 ```powershell
-Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe'" |
-  Where-Object { $_.CommandLine -notmatch '--type=' -and $_.CommandLine -match '--user-data-dir=\S*[\\/]bank-sync(?=["\s]|$)' } |
-  ForEach-Object { Get-Process -Id $_.ProcessId } |
-  Select-Object Id, MainWindowTitle, MainWindowHandle
+$chrome = "C:\Program Files\Google\Chrome\Application\chrome.exe"
+$profile = "$HOME\.cache\Google\Chrome\bank-sync"
+$chromeDevtools = ".\node_modules\.bin\chrome-devtools.cmd"
+$portFile = Join-Path $profile "DevToolsActivePort"
+
+function Get-ActiveBrowserUrl {
+  if (-not (Test-Path $portFile)) {
+    return $null
+  }
+
+  $portFileContent = Get-Content $portFile
+  if ($portFileContent.Count -lt 2 -or $portFileContent[0] -notmatch '^\d+$') {
+    Write-Verbose "Ignoring an invalid DevToolsActivePort file."
+    return $null
+  }
+
+  $candidate = "http://127.0.0.1:$($portFileContent[0])"
+  try {
+    $version = Invoke-RestMethod "$candidate/json/version" -TimeoutSec 2
+  } catch {
+    Write-Verbose "Ignoring a stale DevTools endpoint: $($_.Exception.Message)"
+    return $null
+  }
+
+  if (([uri]$version.webSocketDebuggerUrl).PathAndQuery -ne $portFileContent[1]) {
+    Write-Verbose "Ignoring a DevTools endpoint for a different browser."
+    return $null
+  }
+
+  return $candidate
+}
+
+$reuseDeadline = (Get-Date).AddSeconds(5)
+do {
+  $browserUrl = Get-ActiveBrowserUrl
+  if (-not $browserUrl -and (Test-Path $portFile)) {
+    Start-Sleep -Milliseconds 250
+  }
+} while (-not $browserUrl -and (Test-Path $portFile) -and (Get-Date) -lt $reuseDeadline)
+
+if (-not $browserUrl) {
+  Remove-Item $portFile -Force -ErrorAction SilentlyContinue
+
+  & $chrome `
+    --remote-debugging-address=127.0.0.1 `
+    --remote-debugging-port=0 `
+    "--user-data-dir=$profile"
+
+  $deadline = (Get-Date).AddSeconds(20)
+  do {
+    $browserUrl = Get-ActiveBrowserUrl
+    if (-not $browserUrl) {
+      Start-Sleep -Milliseconds 250
+    }
+  } while (-not $browserUrl -and (Get-Date) -lt $deadline)
+
+  if (-not $browserUrl) {
+    throw "Chrome did not publish a working DevTools endpoint."
+  }
+}
+
+Invoke-RestMethod "$browserUrl/json/version" |
+  Select-Object Browser, "Protocol-Version", webSocketDebuggerUrl
+
+& $chromeDevtools status
+$sessionId = [guid]::NewGuid().ToString()
+& $chromeDevtools start `
+  --browserUrl=$browserUrl `
+  --categoryExtensions=true `
+  --sessionId=$sessionId
+
+& $chromeDevtools list_pages --sessionId=$sessionId
+& $chromeDevtools list_extensions --sessionId=$sessionId
 ```
-
-Match the `--user-data-dir` flag rather than a bare `bank-sync` substring, anchor the end of the
-path, and exclude `--type=` processes. Chrome's own default arguments contain unrelated matches,
-PowerShell's `-match` is case-insensitive, a plain `\b` would also match a sibling profile such
-as `bank-sync-old`, and every child process inherits the profile path.
-
-### Authentication and automation limits
-
-Bank sites run bot detection. Expect commercial bot-management and device-fingerprinting
-services, which read automation signals from the browser.
-
-Visible mode does not make an automated browser indistinguishable from a manually launched
-one. Leave `navigator.webdriver` and other automation signals unchanged; do not inject scripts
-or tune flags to conceal automation. A persistent profile retains browser data, not a guarantee
-of authentication or acceptance by a bank.
-
-If a site rejects the automated session, report the workflow as blocked and ask the user to
-take over or choose a supported access method. Do not retry with fingerprint overrides or
-attempt to bypass the bank's fraud controls.
-
-### Sharing the daemon
-
-By default, CLI commands share one daemon, and `start` restarts it, replacing a daemon another
-skill pointed at a different browser. Capture the current configuration with `status` before
-restarting, and restore it afterwards when the previous session still matters.
-
-Chrome refuses to open a profile directory that another Chrome process already has open. Keep
-this profile directory distinct from every other automation or everyday profile on the machine.
 
 ## 3. Operate the extension
 
-The daemon from step 2 is the connection; no separate connect command exists.
+The daemon from step 2 owns the client connection to the directly launched Chrome. There is no
+separate connect command after `start --browserUrl=...`.
 
 ### Load the extension
 
-Load it at the start of every session:
+Start every Chrome session by checking whether the unpacked extension is present, and install it
+only when absent. The unpacked extension belongs to the running Chrome instance, not the CLI
+daemon:
 
-```sh
-./node_modules/.bin/chrome-devtools install_extension "/abs/path/to/extension"
-```
+- Stopping and restarting the daemon leaves the extension installed while Chrome keeps running.
+- Closing and restarting Chrome removes the unpacked extension even when the same profile is
+  reused, so reconnect the daemon and run `install_extension` again.
+- In the controlled restart test for this extension, reinstalling from the same absolute path
+  returned the same ID and restored its existing `chrome.storage.local` data.
 
-An unpacked extension loaded this way is **session state, not profile state**. A restarted daemon
-reports `No extensions installed` even with the same `--userDataDir`. Confirm with
-`list_extensions` rather than trusting the exit code.
+These behaviors were verified by controlled restarts with a temporary storage marker that was
+removed after the test. Never infer extension state from the daemon lifecycle or an earlier
+successful command; verify it with `list_extensions`.
 
-The install path is the directory containing `manifest.json`. The extension ID is derived from
-that absolute path, so it is stable across restarts and reinstalls from the same path; re-read it
-from `list_extensions` only when the path changes.
+The install path is the directory containing `manifest.json`. Chrome assigns the extension ID
+when it loads the extension. A manifest
+[`key`](https://developer.chrome.com/docs/extensions/reference/manifest/key) maintains a
+consistent ID during development, while an unpacked extension without a key can depend on its
+path. Capture the ID returned by every `install_extension` call and confirm it with
+`list_extensions`; never infer it from the path.
 
-Use `reload_extension <id>` after editing sources. It picks up changes without changing the ID.
+When an installed unpacked extension's sources change, connect the daemon and run
+`reload_extension <id>`. This reloads the same path without changing the ID or requiring an
+uninstall/install cycle. If `list_extensions` does not contain the ID, use `install_extension`
+instead. Reopen an extension popup after reloading it, and reload existing host pages when changed
+content scripts must be injected again.
 
 ### Drive it
 
@@ -164,19 +217,48 @@ documents the commands themselves, including its `## Extensions` section. Behavi
   messages, `list_network_requests <pageId>` shows their requests, and `take_snapshot <pageId>`
   shows DOM they rendered. Requests from the extension's own service worker belong to the
   service-worker target instead.
-- `evaluate_script` takes the function as one positional argument. On Windows PowerShell, pass it
-  on a single line; a newline breaks argument parsing, so the following flags are lost and the
-  command fails.
+
+### Windows PowerShell reference
+
+The examples use the scoped daemon created in step 2. Omit `--sessionId` when reusing the
+compatible default daemon. The extension path must be the directory containing `manifest.json`.
+
+```powershell
+& $chromeDevtools list_extensions --sessionId=$sessionId
+& $chromeDevtools install_extension "C:\absolute\path\to\extension" --sessionId=$sessionId
+& $chromeDevtools reload_extension "<extension-id>" --sessionId=$sessionId
+& $chromeDevtools trigger_extension_action "<extension-id>" --sessionId=$sessionId
+& $chromeDevtools list_pages --sessionId=$sessionId
+```
+
+After `list_pages`, target an extension service worker with its current ID:
+
+```powershell
+& $chromeDevtools evaluate_script "() => 1" `
+  --serviceWorkerId "<service-worker-id>" `
+  --sessionId=$sessionId
+```
+
+Pass the function to `evaluate_script` on one line. A newline inside that positional argument
+breaks Windows command parsing, so later flags are lost.
+
+When work ends, stop only the scoped daemon created for this workflow:
+
+```powershell
+& $chromeDevtools stop --sessionId=$sessionId
+```
 
 ## Working rules
 
 - Verify the postcondition of each mutation before continuing. A zero exit code is not evidence
   that the extension loaded, reloaded, or reached the expected state.
 - The profile contains private browser data such as cookies. Treat it as the user's data:
-  do not copy it into a repository or move it between machines. This extension's
-  `chrome.storage.session` cache is in memory and clears on browser restart or extension
-  reload; it is not persisted in the profile directory.
+  do not copy it into a repository or move it between machines.
+- [Chrome documents](https://developer.chrome.com/docs/extensions/reference/api/storage#property-session)
+  that `chrome.storage.session` is held in memory and clears when an extension is disabled,
+  reloaded, or updated, and when the browser restarts.
 - Keep credentials, cookies, tokens, and other values read out of a live session out of files and
   out of reports.
+- Do not inject scripts or tune flags to conceal automation or bypass a bank's fraud controls.
 - Ask before uninstalling an extension, clearing a profile, or closing a browser the user did not
   ask to be closed.
