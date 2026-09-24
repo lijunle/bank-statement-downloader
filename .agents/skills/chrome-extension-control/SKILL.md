@@ -11,11 +11,9 @@ Three steps, in order. Each depends on the previous one.
 2. **[Launch the Chrome instance](#2-launch-the-chrome-instance)** — once per working session.
 3. **[Operate the extension](#3-operate-the-extension)** — the actual work.
 
-Except for the installation command below, examples run from the directory containing
-this `SKILL.md`, not the repository root. Use
-`./node_modules/.bin/chrome-devtools` in place of the bare `chrome-devtools` in upstream
-examples, or the binary's absolute path from another directory. On Windows, call
-`.\node_modules\.bin\chrome-devtools.cmd` from PowerShell, or use a Bash shell.
+The workflow and its invariants are platform-independent. Platform-specific commands belong in
+the reference subsection at the end of each step so another reference, such as macOS, can be
+added without changing how the workflow is explained.
 
 ## 1. Machine setup
 
@@ -27,52 +25,67 @@ a genuine Chrome build and unpacked extensions can load over an existing DevTool
 connection. Chrome versions before 149 cannot use the extension tools through `--browserUrl`;
 update Chrome instead of falling back to having the CLI launch it over a pipe.
 
-On Windows, verify the installed version before continuing:
+Install the pinned CLI, which replaces upstream's global-install instructions and keeps the CLI
+and its bundled documentation on the version in the skill's `package.json` and
+`package-lock.json`. Reinstall whenever those manifests change.
+
+The CLI dependency belongs to this skill rather than the repository root. Run skill installation
+from the repository root, then run later CLI commands from the directory containing this
+`SKILL.md` or use the CLI's absolute path.
+
+### Windows PowerShell reference
+
+Verify Chrome, then install the skill-local dependency from the repository root:
 
 ```powershell
 (Get-Item "C:\Program Files\Google\Chrome\Application\chrome.exe").VersionInfo.ProductVersion
-```
-
-Install the pinned CLI, which replaces upstream's global-install instructions and keeps the CLI
-and its bundled documentation on the version in the skill's `package.json` and
-`package-lock.json`. Run this command from the repository root:
-
-```powershell
 npm ci --prefix .\.agents\skills\chrome-extension-control
 ```
 
-Re-run it whenever those manifests change. For the examples below, switch to the skill
-directory, or use the CLI's absolute path; root dependencies do not provide this CLI.
-
 ## 2. Launch the Chrome instance
 
-Launch Chrome directly, then point the CLI daemon at its TCP DevTools endpoint. Do not let
-`chrome-devtools` launch Chrome. Keeping the browser lifecycle separate from the daemon:
+Launch Chrome directly and then connect the CLI daemon to its TCP DevTools endpoint. Do not let
+`chrome-devtools` launch Chrome. Separating the browser and daemon lifecycles:
 
 - avoids Puppeteer's default launch arguments;
 - lets the user keep using the visible browser while the daemon disconnects or restarts;
 - allows the user to see and control exactly which executable, profile, address, and port are in
   use.
 
-Use a dedicated persistent profile and bind CDP to loopback only. On Windows:
+Use a dedicated persistent profile that no other Chrome process owns. Chrome 136 and newer
+require a non-default profile for remote debugging. Bind CDP to loopback, ask Chrome to allocate
+an available port, and read the result from `DevToolsActivePort` in the profile directory.
+
+A visible browser is mandatory for bank work, which needs sign-in, CAPTCHA, consent, and
+multi-factor prompts. The profile retains browser data but does not guarantee that authentication
+will remain valid; ask the user to sign in again when needed.
+
+Do not continue until all browser postconditions hold:
+
+- the DevTools version endpoint responds on the allocated loopback port;
+- the browser process uses the expected profile and owns a visible window.
+
+Check the current CLI daemon before changing it. Reuse it when it already targets this browser
+endpoint with the extension category enabled. Otherwise preserve it and create a session-scoped
+daemon. Use the same session ID for all later commands and stop only that scoped daemon when work
+ends. Never let a command start the daemon implicitly because it would lose the selected endpoint
+and extension category.
+
+Verify the daemon with both an ordinary page command and an extension command.
+`No extensions installed` is valid before step 3 and proves that the browser-level extension API
+is available.
+
+### Windows PowerShell reference
+
+The reference below launches Chrome, discovers its endpoint, verifies the visible browser, and
+connects a scoped CLI daemon. If `status` already reports the same browser URL and the extension
+category, reuse that daemon and omit `--sessionId` from later commands.
 
 ```powershell
+$chrome = "C:\Program Files\Google\Chrome\Application\chrome.exe"
 $profile = "$HOME\.cache\Google\Chrome\bank-sync"
-& "C:\Program Files\Google\Chrome\Application\chrome.exe" `
-  --remote-debugging-address=127.0.0.1 `
-  --remote-debugging-port=0 `
-  "--user-data-dir=$profile"
-```
+$chromeDevtools = ".\node_modules\.bin\chrome-devtools.cmd"
 
-Port `0` makes Chrome choose an available port instead of assuming that a fixed port is free. Chrome
-writes the selected port to `DevToolsActivePort` in the profile directory. Chrome 136 and newer
-require a non-default `--user-data-dir` for remote debugging; never bind the endpoint to a
-non-loopback address.
-
-Before launching, confirm that no Chrome process already owns the `bank-sync` profile. Chrome
-refuses to open one profile in two browser instances.
-
-```powershell
 $profileOwner = Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe'" |
   Where-Object {
     $_.CommandLine -match '--user-data-dir=(?:"[^"]*[\\/]bank-sync"|\S*[\\/]bank-sync)(?=[\s]|$)'
@@ -80,30 +93,17 @@ $profileOwner = Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe'" |
 if ($profileOwner) {
   throw "The bank-sync profile is already open."
 }
-```
 
-The profile is created on first launch. Sign in to required sites while the browser is visible.
-It retains browser data but does not guarantee that a bank session remains authenticated.
-Unpacked extension installation is browser-session state and is handled in step 3.
+& $chrome `
+  --remote-debugging-address=127.0.0.1 `
+  --remote-debugging-port=0 `
+  "--user-data-dir=$profile"
 
-A visible browser is mandatory for bank work, which needs sign-in, CAPTCHA, consent, and
-multi-factor prompts.
-
-### Verify Chrome
-
-Read the allocated port after Chrome writes `DevToolsActivePort`, then verify the loopback
-endpoint:
-
-```powershell
 $port = Get-Content (Join-Path $profile "DevToolsActivePort") -TotalCount 1
 $browserUrl = "http://127.0.0.1:$port"
 Invoke-RestMethod "$browserUrl/json/version" |
   Select-Object Browser, "Protocol-Version", webSocketDebuggerUrl
-```
 
-Also verify that the browser process uses the dedicated profile and owns a visible window:
-
-```powershell
 Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe'" |
   Where-Object {
     $_.CommandLine -notmatch '--type=' -and
@@ -111,65 +111,31 @@ Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe'" |
   } |
   ForEach-Object { Get-Process -Id $_.ProcessId } |
   Select-Object Id, MainWindowTitle, MainWindowHandle
-```
 
-Match the `--user-data-dir` flag rather than a bare `bank-sync` substring, anchor the end of the
-path, and exclude `--type=` processes. Chrome's own default arguments contain unrelated matches,
-PowerShell's `-match` is case-insensitive, a plain `\b` would also match a sibling profile such
-as `bank-sync-old`, and every child process inherits the profile path.
-
-### Connect the CLI daemon
-
-Check the current daemon before changing it:
-
-```powershell
-$chromeDevtools = ".\node_modules\.bin\chrome-devtools.cmd"
 & $chromeDevtools status
-```
-
-Reuse it when its `--browser-url` matches `$browserUrl` and it has `--category-extensions`.
-Otherwise leave it untouched and create a session-scoped daemon:
-
-```powershell
 $sessionId = [guid]::NewGuid().ToString()
 & $chromeDevtools start `
   --browserUrl=$browserUrl `
   --categoryExtensions=true `
   --sessionId=$sessionId
-```
 
-Use that same `--sessionId` on every later command and stop only that scoped daemon when work
-ends. Never let a command start the selected daemon implicitly: it would lose `$browserUrl` and
-the extension category. The commands below show the scoped case; omit `--sessionId` when reusing
-the compatible default daemon.
-
-Verify both ordinary page access and the browser-level extension API:
-
-```powershell
 & $chromeDevtools list_pages --sessionId=$sessionId
 & $chromeDevtools list_extensions --sessionId=$sessionId
 ```
 
-`No extensions installed` is a valid result before step 3; it proves that the extension command
-reached Chrome.
+Match the `--user-data-dir` flag rather than a bare `bank-sync` substring, anchor the end of the
+path, and exclude `--type=` processes. Every child process inherits the profile path.
 
 ## 3. Operate the extension
 
 The daemon from step 2 owns the client connection to the directly launched Chrome. There is no
-separate connect command after `start --browserUrl=...`. When using a scoped daemon, include its
-`--sessionId` on every command below.
+separate connect command after `start --browserUrl=...`.
 
 ### Load the extension
 
-Start every Chrome session by checking whether the unpacked extension is present:
-
-```sh
-./node_modules/.bin/chrome-devtools list_extensions
-./node_modules/.bin/chrome-devtools install_extension "/absolute/path/to/extension"
-```
-
-Install only when the extension is absent. The unpacked extension belongs to the running Chrome
-instance, not the CLI daemon:
+Start every Chrome session by checking whether the unpacked extension is present, and install it
+only when absent. The unpacked extension belongs to the running Chrome instance, not the CLI
+daemon:
 
 - Stopping and restarting the daemon leaves the extension installed while Chrome keeps running.
 - Closing and restarting Chrome removes the unpacked extension even when the same profile is
@@ -210,9 +176,36 @@ documents the commands themselves, including its `## Extensions` section. Behavi
   messages, `list_network_requests <pageId>` shows their requests, and `take_snapshot <pageId>`
   shows DOM they rendered. Requests from the extension's own service worker belong to the
   service-worker target instead.
-- `evaluate_script` takes the function as one positional argument. On Windows PowerShell, pass it
-  on a single line; a newline breaks argument parsing, so the following flags are lost and the
-  command fails.
+
+### Windows PowerShell reference
+
+The examples use the scoped daemon created in step 2. Omit `--sessionId` when reusing the
+compatible default daemon. The extension path must be the directory containing `manifest.json`.
+
+```powershell
+& $chromeDevtools list_extensions --sessionId=$sessionId
+& $chromeDevtools install_extension "C:\absolute\path\to\extension" --sessionId=$sessionId
+& $chromeDevtools reload_extension "<extension-id>" --sessionId=$sessionId
+& $chromeDevtools trigger_extension_action "<extension-id>" --sessionId=$sessionId
+& $chromeDevtools list_pages --sessionId=$sessionId
+```
+
+After `list_pages`, target an extension service worker with its current ID:
+
+```powershell
+& $chromeDevtools evaluate_script "() => 1" `
+  --serviceWorkerId "<service-worker-id>" `
+  --sessionId=$sessionId
+```
+
+Pass the function to `evaluate_script` on one line. A newline inside that positional argument
+breaks Windows command parsing, so later flags are lost.
+
+When work ends, stop only the scoped daemon created for this workflow:
+
+```powershell
+& $chromeDevtools stop --sessionId=$sessionId
+```
 
 ## Working rules
 
