@@ -1,6 +1,5 @@
 /**
- * Fidelity tests use synthetic examples of the current Document Center responses.
- * Credit-card tests retain coverage of the historical GraphQL compatibility path.
+ * Fidelity tests use synthetic examples of the Document Center and credit-card REST responses.
  */
 import { describe, it, beforeEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
@@ -29,12 +28,16 @@ const contactsUrl = 'https://digitalservices.fidelity.com/ftgw/dp/rwcf-cm-contac
 const accountsUrl = 'https://dpservice.fidelity.com/ftgw/dp/customer-am-acctnxt/v2/accounts';
 const statementsUrl = 'https://digitalservices.fidelity.com/ftgw/dp/retail-am-financialdoc/v1/accounts/communications/financial-documents/statements';
 const downloadUrl = 'https://digitalservices.fidelity.com/ftgw/dp/retail-am-financialdoc/v2/accounts/communications/financial-documents/download';
-const cardUrl = 'https://digital.fidelity.com/ftgw/digital/credit-card/api/graphql';
+const contextUrl = 'https://digital.fidelity.com/ftgw/digital/portfolio/api/GetContext';
+const cardUrl = 'https://dpservice.fidelity.com/ftgw/dp/customer-creditcard-statements/v1/customers/creditcards';
+let nextResponseIndex = 0;
 
 function respond(data, status = 200, statusText = 'OK') {
+    const callIndex = Math.max(nextResponseIndex, mockFetch.mock.calls.length);
+    nextResponseIndex = callIndex + 1;
     mockFetch.mock.mockImplementationOnce(async () => new Response(JSON.stringify(data), {
         status, statusText, headers: { 'content-type': 'application/json; charset=UTF-8' },
-    }));
+    }), callIndex);
 }
 
 function request() {
@@ -43,6 +46,31 @@ function request() {
     assert.equal(options.method, 'POST');
     assert.equal(options.credentials, 'include');
     return { url, headers: options.headers, body: JSON.parse(options.body) };
+}
+
+function cardRequest() {
+    assert.equal(mockFetch.mock.calls.length, 1);
+    const [url, options] = mockFetch.mock.calls[0].arguments;
+    assert.equal(options.method, 'GET');
+    assert.equal(options.credentials, 'include');
+    assert.equal(options.body, undefined);
+    assert.equal(options.headers.appid, 'AP159750');
+    assert.equal(options.headers.appname, 'Portfolio Summary Credit Card Account Management');
+    assert.equal(options.headers['apollographql-client-name'], undefined);
+    return new URL(url);
+}
+
+function cardEntry(overrides = {}) {
+    return {
+        acctNum: '0002',
+        acctType: 'Fidelity Credit Card',
+        preferenceDetail: { name: 'Example credit card', isHidden: false },
+        ...overrides,
+    };
+}
+
+function portfolioContext(assets) {
+    return { getContext: { person: { assets } } };
 }
 
 function documentEntry(overrides = {}) {
@@ -82,11 +110,38 @@ function pdfResponse(overrides = {}) {
 describe('Fidelity API', () => {
     beforeEach(() => {
         mockFetch.mock.resetCalls();
+        nextResponseIndex = 0;
         mockFetch.mock.mockImplementation(async () => { throw new Error('Unexpected fetch'); });
         document.cookie = 'MC=test-session; other=value';
     });
 
     it('has the expected bank ID', () => assert.equal(bankId, 'fidelity'));
+
+    describe('statement date ranges', () => {
+        const cases = [
+            ['ordinary day', '2026-09-23T12:00:00Z', '2026-03-23', '2026-09-23'],
+            ['non-leap February', '2026-08-31T12:00:00Z', '2026-02-28', '2026-08-31'],
+            ['leap February', '2024-08-31T12:00:00Z', '2024-02-29', '2024-08-31'],
+            ['thirty-day target month', '2026-05-31T12:00:00Z', '2025-11-30', '2026-05-31'],
+            ['year boundary', '2026-01-31T12:00:00Z', '2025-07-31', '2026-01-31'],
+            ['UTC midnight', '2026-03-01T00:30:00Z', '2025-09-01', '2026-03-01'],
+            ['late UTC month-end', '2026-08-31T23:30:00Z', '2026-02-28', '2026-08-31'],
+        ];
+
+        for (const [label, now, startDate, endDate] of cases) {
+            for (const selectedAccount of [account, card]) {
+                it(`${selectedAccount.accountType}: ${label}`, async (t) => {
+                    t.mock.timers.enable({ apis: ['Date'], now: Date.parse(now) });
+                    const isCard = selectedAccount.accountType === 'CreditCard';
+                    respond(isCard ? { statements: [] } : statementList([]));
+                    assert.deepEqual(await getStatements(selectedAccount), []);
+                    const range = isCard ? Object.fromEntries(cardRequest().searchParams) : request().body;
+                    assert.equal(range.startDate, startDate);
+                    assert.equal(range.endDate, endDate);
+                });
+            }
+        }
+    });
 
     describe('getSessionId', () => {
         for (const cookie of ['MC', 'FC', 'RC', 'SC']) {
@@ -162,7 +217,7 @@ describe('Fidelity API', () => {
     });
 
     describe('getAccounts', () => {
-        it('uses the current REST response and retains the credit-card field mapping', async () => {
+        it('uses a supplied full credit-card ID without fetching Portfolio context', async () => {
             respond({ acctDetails: [
                 { acctNum: account.accountId, acctType: 'Brokerage', preferenceDetail: { name: account.accountName, isHidden: false } },
                 { acctNum: '0002', acctType: 'Fidelity Credit Card', preferenceDetail: { name: 'Example credit card' }, creditCardDetail: { creditCardAcctNumber: card.accountId } },
@@ -207,6 +262,85 @@ describe('Fidelity API', () => {
                 creditCardDetail: { creditCardAcctNumber: '' },
             }] });
             assert.deepEqual(await getAccounts(profile), [account]);
+        });
+
+        it('enriches abbreviated card IDs once per listing, even with multiple credit cards', async () => {
+            respond({ acctDetails: [cardEntry(), cardEntry({ acctNum: '0003' })] });
+            respond(portfolioContext([
+                cardEntry({ creditCardDetail: { creditCardAcctNumber: card.accountId, memberId: 'not-the-card-id' } }),
+                cardEntry({ acctNum: '0003', creditCardDetail: { creditCardAcctNumber: 'second-full-card-id' } }),
+            ]));
+            const accounts = await getAccounts(profile);
+            assert.deepEqual(accounts.map(a => ({ id: a.accountId, mask: a.accountMask, name: a.accountName })), [
+                { id: card.accountId, mask: '0002', name: 'Example credit card' },
+                { id: 'second-full-card-id', mask: '0003', name: 'Example credit card' },
+            ]);
+            assert.equal(mockFetch.mock.calls.length, 2);
+            const [url, options] = mockFetch.mock.calls[1].arguments;
+            assert.equal(url, contextUrl);
+            assert.equal(options.method, 'POST');
+            assert.equal(options.credentials, 'include');
+            assert.deepEqual(JSON.parse(options.body), {});
+            assert.equal(options.headers['Content-Type'], 'application/json');
+        });
+
+        it('does not fetch Portfolio context for hidden cards or investment-only lists', async () => {
+            respond({ acctDetails: [
+                { acctNum: account.accountId, acctType: 'Brokerage', preferenceDetail: { name: account.accountName } },
+                cardEntry({ preferenceDetail: { isHidden: true } }),
+            ] });
+            assert.deepEqual(await getAccounts(profile), [account]);
+            assert.equal(mockFetch.mock.calls.length, 1);
+        });
+
+        it('does not substitute a member ID or a short card ID for the full identifier', async () => {
+            for (const detail of [{ memberId: 'member-only' }, { creditCardAcctNumber: '0002' }, { creditCardAcctNumber: '' }]) {
+                respond({ acctDetails: [cardEntry()] });
+                respond(portfolioContext([cardEntry({ creditCardDetail: detail })]));
+                await assert.rejects(getAccounts(profile), /Full credit-card identifier missing/);
+            }
+        });
+
+        it('resolves a short ID even if it appears in creditCardDetail', async () => {
+            respond({ acctDetails: [cardEntry({ creditCardDetail: { creditCardAcctNumber: '0002' } })] });
+            respond(portfolioContext([cardEntry({ creditCardDetail: { creditCardAcctNumber: card.accountId } })]));
+            assert.equal((await getAccounts(profile))[0].accountId, card.accountId);
+        });
+
+        it('rejects absent or ambiguous card matches rather than guessing by mask', async () => {
+            for (const assets of [
+                [],
+                [cardEntry({ acctType: 'Brokerage' })],
+                [cardEntry({ acctNum: 'OTHER0002' })],
+                [
+                    cardEntry({ creditCardDetail: { creditCardAcctNumber: card.accountId } }),
+                    cardEntry({ creditCardDetail: { creditCardAcctNumber: 'different-card-id' } }),
+                ],
+            ]) {
+                respond({ acctDetails: [cardEntry()] });
+                respond(portfolioContext(assets));
+                await assert.rejects(getAccounts(profile), /Expected one matching credit card/);
+            }
+        });
+
+        it('rejects missing or malformed context data', async () => {
+            for (const data of [{}, portfolioContext(null), portfolioContext([null])]) {
+                respond({ acctDetails: [cardEntry()] });
+                respond(data);
+                await assert.rejects(getAccounts(profile), /Account assets missing or malformed/);
+            }
+        });
+
+        it('reports context API failures without returning a short card ID', async () => {
+            respond({ acctDetails: [cardEntry()] });
+            respond({}, 403, 'Forbidden');
+            await assert.rejects(getAccounts(profile), /Failed to get accounts: Fidelity API request failed: 403/);
+        });
+
+        it('rejects a card without an account mask needed for matching', async () => {
+            respond({ acctDetails: [cardEntry({ acctNum: undefined })] });
+            await assert.rejects(getAccounts(profile), /Credit-card account mask missing/);
+            assert.equal(mockFetch.mock.calls.length, 1);
         });
 
         it('accepts a genuinely empty account list', async () => {
@@ -352,53 +486,119 @@ describe('Fidelity API', () => {
         });
     });
 
-    describe('credit-card compatibility', () => {
-        it('retains the GraphQL statement-list request and mapping', async () => {
-            respond({ data: { getStatementsList: { statements: [
-                { statementEndDate: '2026-01-18' },
-                { statementEndDate: '2025-12-18' },
-            ] } } });
+    describe('credit-card REST API', () => {
+        const statement = { account: card, statementId: '2026-01-18', statementDate: '2026-01-18' };
+
+        it('uses the top-level statement list and its explicit download date', async () => {
+            respond({ statements: [
+                { statementDate: '2026-01-18', statementEndDate: '2026-01-17' },
+                { statementDate: '2025-12-18' },
+            ] });
             assert.deepEqual(await getStatements(card), [
                 { account: card, statementId: '2026-01-18', statementDate: '2026-01-18' },
                 { account: card, statementId: '2025-12-18', statementDate: '2025-12-18' },
             ]);
-            const sent = request();
-            assert.equal(sent.url, cardUrl);
-            assert.equal(sent.body.operationName, 'GetStatementsList');
-            assert.equal(sent.body.variables.accountId, card.accountId);
-            assert.equal(sent.headers['apollographql-client-name'], 'credit-card');
-            assert.equal(sent.headers['apollographql-client-version'], '0.0.1');
+            const url = cardRequest();
+            assert.equal(url.origin + url.pathname, `${cardUrl}/${card.accountId}/statements`);
+            assert.match(url.searchParams.get('startDate'), /^\d{4}-\d{2}-\d{2}$/);
+            assert.match(url.searchParams.get('endDate'), /^\d{4}-\d{2}-\d{2}$/);
+            assert(url.searchParams.get('startDate') < url.searchParams.get('endDate'));
+            assert.deepEqual([...url.searchParams.keys()], ['startDate', 'endDate']);
         });
 
         it('accepts an empty credit-card statement list', async () => {
-            respond({ data: { getStatementsList: { statements: [] } } });
+            respond({ statements: [] });
             assert.deepEqual(await getStatements(card), []);
         });
 
-        it('retains the GraphQL download and Base64 decoding', async () => {
-            respond({ data: { getStatement: { statement: { pageContent: Buffer.from(pdfText).toString('base64') } } } });
-            const statement = { account: card, statementId: '2026-01-18', statementDate: '2026-01-18' };
+        it('downloads the selected date with GET and returns the decoded PDF', async () => {
+            respond({ statement: { statementDate: statement.statementDate, pageContent: Buffer.from(pdfText).toString('base64') } });
             const blob = await downloadStatement(statement);
             assert.equal(blob.type, 'application/pdf');
             assert.equal(await blob.text(), pdfText);
-            const sent = request();
-            assert.equal(sent.url, cardUrl);
-            assert.equal(sent.body.operationName, 'GetStatement');
-            assert.deepEqual(sent.body.variables, { accountId: card.accountId, statementDate: '2026-01-18' });
-            assert.equal(sent.headers['apollographql-client-name'], 'credit-card');
-            assert.equal(sent.headers['apollographql-client-version'], '0.0.1');
+            assert.equal(cardRequest().href, `${cardUrl}/${card.accountId}/statements/2026-01-18`);
         });
 
         it('reports missing credit-card PDF content', async () => {
-            respond({ data: { getStatement: { statement: {} } } });
-            await assert.rejects(downloadStatement({ account: card }), /No PDF content in credit card statement response/);
+            respond({ statement: { statementDate: statement.statementDate } });
+            await assert.rejects(downloadStatement(statement), /No PDF content/);
         });
 
         it('reports credit-card list and download HTTP failures', async () => {
             respond({}, 500, 'Internal Server Error');
-            await assert.rejects(getStatements(card), /GetStatementsList API request failed: 500/);
+            await assert.rejects(getStatements(card), /Failed to get statements: Fidelity API request failed: 500/);
             respond({}, 500, 'Internal Server Error');
-            await assert.rejects(downloadStatement({ account: card }), /Credit card PDF download failed: 500/);
+            await assert.rejects(downloadStatement(statement), /Failed to download statement: Fidelity API request failed: 500/);
+        });
+
+        it('encodes the full card ID as a single URL path segment', async () => {
+            const escapedCard = { ...card, accountId: 'card/id+?&=#' };
+            respond({ statements: [] });
+            await getStatements(escapedCard);
+            assert.equal(new URL(mockFetch.mock.calls[0].arguments[0]).pathname,
+                `/ftgw/dp/customer-creditcard-statements/v1/customers/creditcards/${encodeURIComponent(escapedCard.accountId)}/statements`);
+            respond({ statement: { statementDate: statement.statementDate, pageContent: Buffer.from(pdfText).toString('base64') } });
+            await downloadStatement({ ...statement, account: escapedCard });
+            assert.equal(new URL(mockFetch.mock.calls[1].arguments[0]).pathname,
+                `/ftgw/dp/customer-creditcard-statements/v1/customers/creditcards/${encodeURIComponent(escapedCard.accountId)}/statements/2026-01-18`);
+        });
+
+        it('refuses abbreviated card identifiers before sending any request', async () => {
+            for (const accountId of ['0002', '', '   ', null]) {
+                const invalidCard = { ...card, accountId };
+                await assert.rejects(getStatements(invalidCard), /Full Fidelity credit-card identifier is missing/);
+                await assert.rejects(downloadStatement({ ...statement, account: invalidCard }), /Full Fidelity credit-card identifier is missing/);
+            }
+            assert.equal(mockFetch.mock.calls.length, 0);
+        });
+
+        it('does not treat a malformed list response as an empty success', async () => {
+            for (const data of [{}, { statements: null }, { statements: {} }, { statements: [null] }]) {
+                respond(data);
+                await assert.rejects(getStatements(card), /Credit-card statement list missing|Invalid credit-card statement entry/);
+            }
+        });
+
+        it('requires valid explicit calendar dates without falling back to period end', async () => {
+            for (const date of [undefined, null, '2026-02-30', '2026-13-01', '2026-1-18', '2026-01-18T00:00:00Z', 1768694400]) {
+                respond({ statements: [{ statementDate: date, statementEndDate: '2026-01-18' }] });
+                await assert.rejects(getStatements(card), /Invalid Fidelity credit-card statement date/);
+            }
+        });
+
+        it('accepts a leap-day statement date', async () => {
+            respond({ statements: [{ statementDate: '2024-02-29' }] });
+            assert.equal((await getStatements(card))[0].statementDate, '2024-02-29');
+        });
+
+        it('rejects an inconsistent or malformed download selection without fetching', async () => {
+            await assert.rejects(downloadStatement({ ...statement, statementId: '2026-02-30' }), /Invalid Fidelity credit-card statement date/);
+            await assert.rejects(downloadStatement({ ...statement, statementId: '2026-01-17' }), /identifier does not match its date/);
+            assert.equal(mockFetch.mock.calls.length, 0);
+        });
+
+        it('rejects missing or mismatched download response dates', async () => {
+            for (const data of [{}, { statement: null }, { statement: { pageContent: Buffer.from(pdfText).toString('base64') } },
+                { statement: { statementDate: '2026-01-17', pageContent: Buffer.from(pdfText).toString('base64') } }]) {
+                respond(data);
+                await assert.rejects(downloadStatement(statement), /does not match the requested statement date/);
+            }
+        });
+
+        it('rejects invalid or non-PDF decoded content', async () => {
+            for (const pageContent of ['', '@invalid-base64@', Buffer.from('<html>Login</html>').toString('base64')]) {
+                respond({ statement: { statementDate: statement.statementDate, pageContent } });
+                await assert.rejects(downloadStatement(statement), /Failed to download statement/);
+            }
+        });
+
+        it('rejects HTML login pages for both card operations', async () => {
+            for (const operation of [() => getStatements(card), () => downloadStatement(statement)]) {
+                mockFetch.mock.mockImplementationOnce(async () => new Response('<html>Login</html>', {
+                    headers: { 'content-type': 'text/html' },
+                }));
+                await assert.rejects(operation(), /Expected a JSON response/);
+            }
         });
     });
 });

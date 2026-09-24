@@ -10,7 +10,8 @@ export const bankId = 'fidelity';
 export const bankName = 'Fidelity';
 
 const BASE_URL = 'https://digital.fidelity.com';
-const CREDITCARD_GRAPHQL_URL = `${BASE_URL}/ftgw/digital/credit-card/api/graphql`;
+const CONTEXT_URL = `${BASE_URL}/ftgw/digital/portfolio/api/GetContext`;
+const CREDITCARD_URL = 'https://dpservice.fidelity.com/ftgw/dp/customer-creditcard-statements/v1/customers/creditcards';
 const SERVICES_URL = 'https://digitalservices.fidelity.com';
 const CONTACTS_URL = `${SERVICES_URL}/ftgw/dp/rwcf-cm-contacts/v4/customers/contacts/get`;
 const ACCOUNTS_URL = 'https://dpservice.fidelity.com/ftgw/dp/customer-am-acctnxt/v2/accounts';
@@ -32,6 +33,12 @@ const CONTACT_HEADERS = {
     'fid-originating-app-id': 'AP162039',
     'fid-originating-app-version': '2',
 };
+const CREDITCARD_HEADERS = {
+    'Accept': 'application/json, text/plain, */*',
+    'Content-Type': 'application/json',
+    'appid': 'AP159750',
+    'appname': 'Portfolio Summary Credit Card Account Management',
+};
 
 /**
  * @param {unknown} value
@@ -48,12 +55,20 @@ function isRecord(value) {
  * @returns {Promise<Record<string, unknown>>}
  */
 async function postJson(url, body, headers = DOCUMENT_HEADERS) {
-    const response = await fetch(url, {
+    return fetchJson(url, {
         method: 'POST',
         headers,
-        credentials: 'include',
         body: JSON.stringify(body),
     });
+}
+
+/**
+ * @param {string} url
+ * @param {RequestInit} options
+ * @returns {Promise<Record<string, unknown>>}
+ */
+async function fetchJson(url, options) {
+    const response = await fetch(url, { ...options, credentials: 'include' });
     if (!response.ok) {
         throw new Error(`Fidelity API request failed: ${response.status} ${response.statusText}`);
     }
@@ -65,6 +80,19 @@ async function postJson(url, body, headers = DOCUMENT_HEADERS) {
         throw new Error('Invalid Fidelity API response structure');
     }
     return data;
+}
+
+function getStatementDateRange() {
+    const endDate = new Date();
+    const startDate = new Date(endDate.getTime());
+    // Set the target month at day 1 before clamping, so month-end cannot roll forward.
+    startDate.setUTCMonth(endDate.getUTCMonth() - 6, 1);
+    const lastDay = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth() + 1, 0)).getUTCDate();
+    startDate.setUTCDate(Math.min(endDate.getUTCDate(), lastDay));
+    return {
+        startDate: startDate.toISOString().split('T')[0],
+        endDate: endDate.toISOString().split('T')[0],
+    };
 }
 
 /**
@@ -80,6 +108,57 @@ function formatStatementDate(seconds) {
         throw new Error('Invalid Fidelity statement date');
     }
     return date.toISOString().split('T')[0];
+}
+
+/**
+ * @param {unknown} value
+ * @returns {string}
+ */
+function creditCardDate(value) {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        throw new Error('Invalid Fidelity credit-card statement date');
+    }
+    const date = new Date(`${value}T00:00:00Z`);
+    if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) {
+        throw new Error('Invalid Fidelity credit-card statement date');
+    }
+    return value;
+}
+
+/**
+ * @param {unknown} value
+ * @returns {value is string}
+ */
+function isFullCardId(value) {
+    return typeof value === 'string' && value.trim().length > 4;
+}
+
+/**
+ * @param {import('./bank.types').Account} account
+ * @returns {string}
+ */
+function creditCardStatementsUrl(account) {
+    if (!isFullCardId(account.accountId)) {
+        throw new Error('Full Fidelity credit-card identifier is missing. Refresh the account list.');
+    }
+    return `${CREDITCARD_URL}/${encodeURIComponent(account.accountId)}/statements`;
+}
+
+/**
+ * @param {unknown} content
+ * @returns {Blob}
+ */
+function decodePdf(content) {
+    if (typeof content !== 'string' || !content) {
+        throw new Error('No PDF content in Fidelity statement response');
+    }
+    const binary = atob(content);
+    if (!binary.startsWith('%PDF-')) {
+        throw new Error('Fidelity statement content is not a PDF');
+    }
+    return new Blob([Uint8Array.from(binary, character => character.charCodeAt(0))], {
+        type: 'application/pdf',
+    });
 }
 
 /**
@@ -180,6 +259,8 @@ export async function getAccounts(profile) {
         }
 
         const accounts = [];
+        /** @type {Record<string, unknown>[] | undefined} */
+        let contextAssets;
 
         for (const asset of assets) {
             if (!isRecord(asset)) {
@@ -196,8 +277,36 @@ export async function getAccounts(profile) {
 
             // For credit cards, we need to store the full account number for statement retrieval
             const cardDetail = isRecord(asset.creditCardDetail) ? asset.creditCardDetail : undefined;
-            const accountId = typeof cardDetail?.creditCardAcctNumber === 'string' && cardDetail.creditCardAcctNumber
+            let accountId = typeof cardDetail?.creditCardAcctNumber === 'string' && cardDetail.creditCardAcctNumber
                 ? cardDetail.creditCardAcctNumber : acctNum;
+
+            if (acctType === 'Fidelity Credit Card' && !isFullCardId(cardDetail?.creditCardAcctNumber)) {
+                if (!acctNum) {
+                    throw new Error('Credit-card account mask missing from Fidelity response');
+                }
+                if (!contextAssets) {
+                    const data = await postJson(CONTEXT_URL, {}, {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json',
+                    });
+                    const context = isRecord(data.getContext) ? data.getContext : undefined;
+                    const person = isRecord(context?.person) ? context.person : undefined;
+                    if (!Array.isArray(person?.assets) || !person.assets.every(isRecord)) {
+                        throw new Error('Account assets missing or malformed in Fidelity Portfolio context');
+                    }
+                    contextAssets = person.assets;
+                }
+                const matches = contextAssets.filter(asset =>
+                    asset.acctType === 'Fidelity Credit Card' && asset.acctNum === acctNum);
+                if (matches.length !== 1) {
+                    throw new Error('Expected one matching credit card in Fidelity Portfolio context');
+                }
+                const detail = isRecord(matches[0].creditCardDetail) ? matches[0].creditCardDetail : undefined;
+                if (!isFullCardId(detail?.creditCardAcctNumber)) {
+                    throw new Error('Full credit-card identifier missing from Fidelity Portfolio context');
+                }
+                accountId = detail.creditCardAcctNumber;
+            }
 
             if (!accountId) {
                 continue; // Skip accounts without an ID
@@ -248,13 +357,11 @@ export async function getStatements(account) {
  * @returns {Promise<import('./bank.types').Statement[]>}
  */
 async function getBrokerageStatements(account) {
-    const endDate = new Date();
-    const startDate = new Date();
-    startDate.setMonth(startDate.getMonth() - 6); // Get last 6 months
+    const { startDate, endDate } = getStatementDateRange();
 
     const data = await postJson(STATEMENTS_URL, {
-        startDate: startDate.toISOString().split('T')[0],
-        endDate: endDate.toISOString().split('T')[0],
+        startDate,
+        endDate,
         docType: 'STMT',
         hasCryptoAccount: false,
         annuityAccountLookup: true,
@@ -306,62 +413,32 @@ async function getBrokerageStatements(account) {
  * @returns {Promise<import('./bank.types').Statement[]>}
  */
 async function getCreditCardStatements(account) {
-    const endDate = new Date();
-    const startDate = new Date();
-    startDate.setMonth(startDate.getMonth() - 6); // Get last 6 months
+    const url = new URL(creditCardStatementsUrl(account));
+    const { startDate, endDate } = getStatementDateRange();
 
-    const query = `query GetStatementsList($accountId: String!, $dateRange: DateRange, $year: String) {
-  getStatementsList(accountId: $accountId, dateRange: $dateRange, year: $year) {
-    statements {
-      statementName
-      statementStartDate
-      statementEndDate
-    }
-  }
-}`;
-
-    const response = await fetch(CREDITCARD_GRAPHQL_URL, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json',
-            'apollographql-client-name': 'credit-card',
-            'apollographql-client-version': '0.0.1',
-            'Referer': `${BASE_URL}/ftgw/digital/portfolio/creditstatements`,
-        },
-        credentials: 'include',
-        body: JSON.stringify({
-            operationName: 'GetStatementsList',
-            variables: {
-                accountId: account.accountId,
-                dateRange: {
-                    startDate: startDate.toISOString().split('T')[0],
-                    endDate: endDate.toISOString().split('T')[0],
-                },
-            },
-            query: query,
-        }),
+    url.searchParams.set('startDate', startDate);
+    url.searchParams.set('endDate', endDate);
+    const data = await fetchJson(url.href, {
+        method: 'GET',
+        headers: CREDITCARD_HEADERS,
     });
 
-    if (!response.ok) {
-        throw new Error(`GetStatementsList API request failed: ${response.status} ${response.statusText}`);
-    }
-
-    const data = /** @type {any} */ (await response.json());
-
-    const statementList = data?.data?.getStatementsList?.statements;
-
+    const statementList = data.statements;
     if (!Array.isArray(statementList)) {
-        return []; // No statements found
+        throw new Error('Credit-card statement list missing from Fidelity response');
     }
 
     const statements = [];
 
     for (const stmt of statementList) {
+        if (!isRecord(stmt)) {
+            throw new Error('Invalid credit-card statement entry in Fidelity response');
+        }
+        const date = creditCardDate(stmt.statementDate);
         statements.push({
             account,
-            statementId: stmt.statementEndDate,
-            statementDate: stmt.statementEndDate,
+            statementId: date,
+            statementDate: date,
         });
     }
 
@@ -378,57 +455,16 @@ export async function downloadStatement(statement) {
         const isCreditCard = statement.account.accountType === 'CreditCard';
 
         if (isCreditCard) {
-            // Credit card statements use GraphQL API with Base64-encoded PDF
-            const query = `query GetStatement($accountId: String!, $statementDate: String!) {
-  getStatement(accountId: $accountId, statementDate: $statementDate) {
-    statement {
-      statementDate
-      pageContent
-      __typename
-    }
-    __typename
-  }
-}`;
-
-            const response = await fetch(CREDITCARD_GRAPHQL_URL, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Accept': 'application/json',
-                    'apollographql-client-name': 'credit-card',
-                    'apollographql-client-version': '0.0.1',
-                    'Referer': `${BASE_URL}/ftgw/digital/portfolio/creditstatements`,
-                },
-                credentials: 'include',
-                body: JSON.stringify({
-                    operationName: 'GetStatement',
-                    variables: {
-                        accountId: statement.account.accountId,
-                        statementDate: statement.statementDate, // Already in YYYY-MM-DD format
-                    },
-                    query,
-                }),
-            });
-
-            if (!response.ok) {
-                throw new Error(`Credit card PDF download failed: ${response.status} ${response.statusText}`);
+            const date = creditCardDate(statement.statementId);
+            if (date !== statement.statementDate) {
+                throw new Error('Credit-card statement identifier does not match its date');
             }
-
-            const data = /** @type {any} */ (await response.json());
-            const pageContent = data?.data?.getStatement?.statement?.pageContent;
-
-            if (!pageContent) {
-                throw new Error('No PDF content in credit card statement response');
+            const url = `${creditCardStatementsUrl(statement.account)}/${encodeURIComponent(date)}`;
+            const data = await fetchJson(url, { method: 'GET', headers: CREDITCARD_HEADERS });
+            if (!isRecord(data.statement) || data.statement.statementDate !== date) {
+                throw new Error('Fidelity credit-card response does not match the requested statement date');
             }
-
-            // Decode Base64 to binary
-            const binaryString = atob(pageContent);
-            const bytes = new Uint8Array(binaryString.length);
-            for (let i = 0; i < binaryString.length; i++) {
-                bytes[i] = binaryString.charCodeAt(i);
-            }
-
-            return new Blob([bytes], { type: 'application/pdf' });
+            return decodePdf(data.statement.pageContent);
         } else {
             const data = await postJson(DOWNLOAD_URL, {
                 id: statement.statementId,
@@ -449,13 +485,8 @@ export async function downloadStatement(statement) {
                 throw new Error('Fidelity statement response is not a PDF');
             }
 
-            const binary = atob(detail.content);
             // The observed response says deflated=Y but decodes directly to PDF bytes.
-            if (!binary.startsWith('%PDF-')) {
-                throw new Error('Fidelity statement content is not a PDF');
-            }
-            const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
-            return new Blob([bytes], { type: 'application/pdf' });
+            return decodePdf(detail.content);
         }
     } catch (error) {
         const err = /** @type {Error} */ (error);
