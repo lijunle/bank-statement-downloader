@@ -53,10 +53,8 @@ Launch Chrome directly and then connect the CLI daemon to its TCP DevTools endpo
   use.
 
 Use a dedicated persistent profile. Chrome 136 and newer require a non-default profile for remote
-debugging. Bind CDP to loopback and have the shell choose an unused random nonzero port, not
-`--remote-debugging-port=0`. Once the endpoint responds, the shell records its port and browser
-WebSocket path in `DevToolsActivePort` in the profile directory; Chrome does not write this file
-for an explicit port.
+debugging. Bind CDP to loopback and have the shell choose an unused random port to pass explicitly
+to Chrome.
 
 Do not infer profile ownership by parsing process command lines. First probe the endpoint recorded
 in `DevToolsActivePort`; reuse it when it responds and its browser WebSocket path matches the
