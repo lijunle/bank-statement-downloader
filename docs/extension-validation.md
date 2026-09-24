@@ -114,6 +114,10 @@ a successful PDF-download end-to-end (E2E) result.
    or lack of extracted text alone does not prove corruption. Blank or image-only
    pages are not automatically invalid; inspect them in context with a local
    viewer or renderer.
+   The standalone [PDF validation skill](../.agents/skills/pdf-validation/SKILL.md)
+   provides a local parser/renderer for this step. Pass the exact file correlated
+   with the download; its file-level result does not establish extension E2E
+   success or replace the account/period check.
 4. Privately verify that the document corresponds to the selected account or
    documented consolidated group and statement period. Check the document itself,
    not just its filename. Report only whether these checks matched, not account
