@@ -241,26 +241,25 @@ documents the commands themselves, including its `## Extensions` section. Behavi
   data loading, or a filter change has finished. Wait with a bounded timeout for the expected
   page, selected value, enabled control, or resolved loading state before reading dependent data.
 - A toolbar popup is ephemeral: it can close between commands. If its target disappears, use
-  `list_pages`, select the intended bank tab, trigger the toolbar action again, and obtain the
+  `list_pages`, select the intended host tab, trigger the toolbar action again, and obtain the
   new popup ID and a fresh snapshot. Do not reuse old popup IDs or element UIDs, and do not
   reopen the popup as an ordinary tab to keep it alive.
 - Reinspect controls after navigation or a rerender. Snapshot roles describe accessibility
   semantics, not necessarily HTML tags: a reported button may be a `div` with `role="button"`.
   Prefer snapshot UIDs for actions; inspect the actual markup before constructing DOM selectors.
 - For a native select, the pinned `fill` command matches the option's displayed text, not its
-  underlying HTML `value`. Confirm the selected option afterward. Changing an account or year
-  can reset other filters and collapse document groups, so recheck and reopen the intended group.
-- Scope extraction to that selected account, year, and document group. Do not collect every date
-  from `document.body`: summaries, letters, tax documents, and other accounts can share the page.
-  Where present, a group's `aria-controls` identifies its content container. Keep bank-specific
-  labels, selectors, and category meanings in that bank's analysis rather than in this skill.
+  underlying HTML `value`. Confirm the selected option afterward. Changing a filter can reset
+  dependent controls and collapse groups, so recheck and reopen the intended group.
+- Scope extraction to the selected view and content group, not all of `document.body`: summaries,
+  hidden panels, and unrelated sections can share the page. Where present, a group's
+  `aria-controls` identifies its content container. Discover application-specific labels and
+  selectors from the current page rather than assuming a particular extension's UI.
 - If a popup disappears after a download click, inspect the browser/local download state before
   retrying. Failure to inspect the popup does not prove that the download failed, and another
   click may create a duplicate.
 
-These are operating tips, not acceptance criteria. Use the
-[Extension Validation Workflow](../../../docs/extension-validation.md) to decide which checks
-to perform and how to report their results.
+These are browser-operating tips. Application-specific acceptance criteria are outside this
+skill's scope.
 
 ### Handle tool results and saved files
 
@@ -268,7 +267,7 @@ to perform and how to report their results.
   CLI, some tool errors are printed with a zero process exit code. A wrapper must not turn a
   missing result into an empty list or proceed as though a failed selection succeeded.
 - Keep stdout and stderr available for diagnosis, but sanitize them before reporting: tool errors
-  can contain account labels, request URLs, and local filenames. A generic "evaluation failed"
+  can contain personal data, request URLs, and local filenames. A generic "evaluation failed"
   message that discards the underlying error makes recovery unnecessarily difficult.
 - Do not assume `--output-format=json` produces one universal result schema. The pinned CLI can
   return structured content or an array of text chunks, including error text. Check the expected
@@ -278,7 +277,7 @@ to perform and how to report their results.
   saved response bodies privately; do not copy raw captures or document payloads into the repo.
 - The pinned navigation tools reject `chrome:` URLs, including `chrome://downloads/`. Do not
   repeatedly retry them. Use the browser's visible download UI or a local before/after file
-  inventory to correlate a completed download, as described in the validation workflow.
+  inventory to correlate a completed download.
 
 ### Windows PowerShell reference
 
@@ -300,13 +299,13 @@ After `list_pages`, target an extension service worker with its current ID:
   --serviceWorkerId "<service-worker-id>" `
   --sessionId=$sessionId
 
-& $chromeDevtools list_console_messages $bankPageId `
+& $chromeDevtools list_console_messages $hostPageId `
   --serviceWorkerId "<service-worker-id>" `
   --types error warn `
   --sessionId=$sessionId
 ```
 
-`$bankPageId` and `$popupPageId` below refer to current IDs obtained from `list_pages`, not
+`$hostPageId` and `$popupPageId` in these examples refer to current IDs from `list_pages`, not
 persisted IDs from an earlier popup or daemon session. Pass array options as separate arguments,
 for example `--types error warn` or `--resourceTypes xhr fetch document`, not comma-separated
 strings such as `--types error,warn`.
@@ -316,8 +315,10 @@ Windows `.cmd` shim's extra quoting layer. From the skill directory:
 
 ```powershell
 $chromeDevtoolsJs = ".\node_modules\chrome-devtools-mcp\build\src\bin\chrome-devtools.js"
-& node $chromeDevtoolsJs evaluate_script '() => { const button = document.querySelector("#refresh-btn"); if (!button) throw new Error("Refresh control missing"); return {enabled: !button.disabled}; }' --pageId $popupPageId --sessionId=$sessionId
+& node $chromeDevtoolsJs evaluate_script '() => ({documentLoaded: document.readyState === "complete"})' --pageId $popupPageId --sessionId=$sessionId
 ```
+
+This probes document load state, not application-specific readiness.
 
 Keep the function argument on one line; a newline can break Windows command parsing and lose
 later flags. Avoid nesting long JavaScript programs inside shell strings. For an existing script
