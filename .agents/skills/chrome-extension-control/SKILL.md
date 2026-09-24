@@ -225,13 +225,59 @@ documents the commands themselves, including its `## Extensions` section. Behavi
   active, which changes what the extension reads.
 - `list_pages` includes extension service workers. Target them with
   `evaluate_script "() => 1" --serviceWorkerId "<id>"` and
-  `list_console_messages --serviceWorkerId "<id>"`. Service workers stop when idle and restart on
-  demand, so re-run `list_pages` for a current ID rather than reusing a stale one.
+  `list_console_messages <pageId> --serviceWorkerId "<id>"`. The pinned CLI still requires
+  the positional page ID for console listing, even with a worker filter. Service workers stop
+  when idle and restart on demand, so re-run `list_pages` for a current ID rather than reusing
+  a stale one.
 - `evaluate_script --pageId` runs in the host page's main world, a different world from a content
   script. Observe content scripts indirectly: `list_console_messages <pageId>` includes their
   messages, `list_network_requests <pageId>` shows their requests, and `take_snapshot <pageId>`
   shows DOM they rendered. Requests from the extension's own service worker belong to the
   service-worker target instead.
+
+### Keep page and popup state current
+
+- Work in short inspect-act-verify steps. A successful click does not establish that navigation,
+  data loading, or a filter change has finished. Wait with a bounded timeout for the expected
+  page, selected value, enabled control, or resolved loading state before reading dependent data.
+- A toolbar popup is ephemeral: it can close between commands. If its target disappears, use
+  `list_pages`, select the intended host tab, trigger the toolbar action again, and obtain the
+  new popup ID and a fresh snapshot. Do not reuse old popup IDs or element UIDs, and do not
+  reopen the popup as an ordinary tab to keep it alive.
+- Reinspect controls after navigation or a rerender. Snapshot roles describe accessibility
+  semantics, not necessarily HTML tags: a reported button may be a `div` with `role="button"`.
+  Prefer snapshot UIDs for actions; inspect the actual markup before constructing DOM selectors.
+- For a native select, the pinned `fill` command matches the option's displayed text, not its
+  underlying HTML `value`. Confirm the selected option afterward. Changing a filter can reset
+  dependent controls and collapse groups, so recheck and reopen the intended group.
+- Scope extraction to the selected view and content group, not all of `document.body`: summaries,
+  hidden panels, and unrelated sections can share the page. Where present, a group's
+  `aria-controls` identifies its content container. Discover application-specific labels and
+  selectors from the current page rather than assuming a particular extension's UI.
+- If a popup disappears after a download click, inspect the browser/local download state before
+  retrying. Failure to inspect the popup does not prove that the download failed, and another
+  click may create a duplicate.
+
+These are browser-operating tips. Application-specific acceptance criteria are outside this
+skill's scope.
+
+### Handle tool results and saved files
+
+- Check the command's exit status **and** its returned result before consuming it. In the pinned
+  CLI, some tool errors are printed with a zero process exit code. A wrapper must not turn a
+  missing result into an empty list or proceed as though a failed selection succeeded.
+- Keep stdout and stderr available for diagnosis, but sanitize them before reporting: tool errors
+  can contain personal data, request URLs, and local filenames. A generic "evaluation failed"
+  message that discards the underlying error makes recovery unnecessarily difficult.
+- Do not assume `--output-format=json` produces one universal result schema. The pinned CLI can
+  return structured content or an array of text chunks, including error text. Check the expected
+  shape for the command instead of blindly parsing a Markdown code fence or trusting JSON alone.
+- `get_network_request --responseFilePath` saves a `.network-response` file; a requested `.json`
+  suffix may be replaced. Use the path reported by the tool and confirm that it exists. Inspect
+  saved response bodies privately; do not copy raw captures or document payloads into the repo.
+- The pinned navigation tools reject `chrome:` URLs, including `chrome://downloads/`. Do not
+  repeatedly retry them. Use the browser's visible download UI or a local before/after file
+  inventory to correlate a completed download.
 
 ### Windows PowerShell reference
 
@@ -252,10 +298,33 @@ After `list_pages`, target an extension service worker with its current ID:
 & $chromeDevtools evaluate_script "() => 1" `
   --serviceWorkerId "<service-worker-id>" `
   --sessionId=$sessionId
+
+& $chromeDevtools list_console_messages $hostPageId `
+  --serviceWorkerId "<service-worker-id>" `
+  --types error warn `
+  --sessionId=$sessionId
 ```
 
-Pass the function to `evaluate_script` on one line. A newline inside that positional argument
-breaks Windows command parsing, so later flags are lost.
+`$hostPageId` and `$popupPageId` in these examples refer to current IDs from `list_pages`, not
+persisted IDs from an earlier popup or daemon session. Pass array options as separate arguments,
+for example `--types error warn` or `--resourceTypes xhr fetch document`, not comma-separated
+strings such as `--types error,warn`.
+
+For JavaScript containing quotes, invoke the pinned Node entry point directly to avoid the
+Windows `.cmd` shim's extra quoting layer. From the skill directory:
+
+```powershell
+$chromeDevtoolsJs = ".\node_modules\chrome-devtools-mcp\build\src\bin\chrome-devtools.js"
+& node $chromeDevtoolsJs evaluate_script '() => ({documentLoaded: document.readyState === "complete"})' --pageId $popupPageId --sessionId=$sessionId
+```
+
+This probes document load state, not application-specific readiness.
+
+Keep the function argument on one line; a newline can break Windows command parsing and lose
+later flags. Avoid nesting long JavaScript programs inside shell strings. For an existing script
+that launches child processes, use an argument array without a shell and preserve both output
+streams and the exit status. Consult `--help` for the pinned command before guessing arguments;
+an update notification is not a reason to install a different CLI version mid-session.
 
 When work ends, stop only the scoped daemon created for this workflow:
 
