@@ -19,6 +19,7 @@ This file is the entry point for agents and defines the durable principles they 
 - [Bank Development Workflow](docs/bank-development.md) - From an authenticated session and network evidence to implementation and real-download validation.
 - [Bank Analysis Format](docs/bank-analysis-format.md) - Required report content, evidence standards, and redaction rules.
 - [Extension Architecture](docs/architecture.md) - Components, message flow, and caching.
+- [Extension Validation Workflow](docs/extension-validation.md) - Standalone toolbar-popup and real-download acceptance checks for a scoped bank/account flow.
 
 ## Important paths
 
