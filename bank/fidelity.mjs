@@ -82,6 +82,19 @@ async function fetchJson(url, options) {
     return data;
 }
 
+function getStatementDateRange() {
+    const endDate = new Date();
+    const startDate = new Date(endDate.getTime());
+    // Set the target month at day 1 before clamping, so month-end cannot roll forward.
+    startDate.setUTCMonth(endDate.getUTCMonth() - 6, 1);
+    const lastDay = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth() + 1, 0)).getUTCDate();
+    startDate.setUTCDate(Math.min(endDate.getUTCDate(), lastDay));
+    return {
+        startDate: startDate.toISOString().split('T')[0],
+        endDate: endDate.toISOString().split('T')[0],
+    };
+}
+
 /**
  * @param {unknown} seconds
  * @returns {string}
@@ -344,13 +357,11 @@ export async function getStatements(account) {
  * @returns {Promise<import('./bank.types').Statement[]>}
  */
 async function getBrokerageStatements(account) {
-    const endDate = new Date();
-    const startDate = new Date();
-    startDate.setMonth(startDate.getMonth() - 6); // Get last 6 months
+    const { startDate, endDate } = getStatementDateRange();
 
     const data = await postJson(STATEMENTS_URL, {
-        startDate: startDate.toISOString().split('T')[0],
-        endDate: endDate.toISOString().split('T')[0],
+        startDate,
+        endDate,
         docType: 'STMT',
         hasCryptoAccount: false,
         annuityAccountLookup: true,
@@ -403,12 +414,10 @@ async function getBrokerageStatements(account) {
  */
 async function getCreditCardStatements(account) {
     const url = new URL(creditCardStatementsUrl(account));
-    const endDate = new Date();
-    const startDate = new Date();
-    startDate.setMonth(startDate.getMonth() - 6); // Get last 6 months
+    const { startDate, endDate } = getStatementDateRange();
 
-    url.searchParams.set('startDate', startDate.toISOString().split('T')[0]);
-    url.searchParams.set('endDate', endDate.toISOString().split('T')[0]);
+    url.searchParams.set('startDate', startDate);
+    url.searchParams.set('endDate', endDate);
     const data = await fetchJson(url.href, {
         method: 'GET',
         headers: CREDITCARD_HEADERS,

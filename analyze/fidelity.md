@@ -146,8 +146,9 @@ use the Portfolio context described in the credit-card section to obtain the ful
 ```
 
 Dates are request filters in `YYYY-MM-DD` format. The UI's default window was
-three months; it is not evidence of a server retention limit. The historical
-extension uses a six-month lookback.
+three months; it is not evidence of a server retention limit. The extension uses
+a six-calendar-month lookback computed in UTC, clamping the start day to the target
+month's last day when needed.
 
 ```json
 {
@@ -317,7 +318,8 @@ GET https://dpservice.fidelity.com/ftgw/dp/customer-creditcard-statements/v1/cus
 
 Encode the full card ID as one URL path segment. The UI used a six-month date
 filter; this does not establish the bank's retention limit or guarantee a statement
-for every month.
+for every month. The extension shares the investment flow's UTC six-calendar-month
+calculation with month-end clamping.
 
 ```json
 {

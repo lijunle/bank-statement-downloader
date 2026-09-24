@@ -117,6 +117,32 @@ describe('Fidelity API', () => {
 
     it('has the expected bank ID', () => assert.equal(bankId, 'fidelity'));
 
+    describe('statement date ranges', () => {
+        const cases = [
+            ['ordinary day', '2026-09-23T12:00:00Z', '2026-03-23', '2026-09-23'],
+            ['non-leap February', '2026-08-31T12:00:00Z', '2026-02-28', '2026-08-31'],
+            ['leap February', '2024-08-31T12:00:00Z', '2024-02-29', '2024-08-31'],
+            ['thirty-day target month', '2026-05-31T12:00:00Z', '2025-11-30', '2026-05-31'],
+            ['year boundary', '2026-01-31T12:00:00Z', '2025-07-31', '2026-01-31'],
+            ['UTC midnight', '2026-03-01T00:30:00Z', '2025-09-01', '2026-03-01'],
+            ['late UTC month-end', '2026-08-31T23:30:00Z', '2026-02-28', '2026-08-31'],
+        ];
+
+        for (const [label, now, startDate, endDate] of cases) {
+            for (const selectedAccount of [account, card]) {
+                it(`${selectedAccount.accountType}: ${label}`, async (t) => {
+                    t.mock.timers.enable({ apis: ['Date'], now: Date.parse(now) });
+                    const isCard = selectedAccount.accountType === 'CreditCard';
+                    respond(isCard ? { statements: [] } : statementList([]));
+                    assert.deepEqual(await getStatements(selectedAccount), []);
+                    const range = isCard ? Object.fromEntries(cardRequest().searchParams) : request().body;
+                    assert.equal(range.startDate, startDate);
+                    assert.equal(range.endDate, endDate);
+                });
+            }
+        }
+    });
+
     describe('getSessionId', () => {
         for (const cookie of ['MC', 'FC', 'RC', 'SC']) {
             it(`extracts the ${cookie} session cookie`, () => {
