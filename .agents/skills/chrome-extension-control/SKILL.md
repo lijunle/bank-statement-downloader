@@ -52,9 +52,15 @@ Launch Chrome directly and then connect the CLI daemon to its TCP DevTools endpo
 - allows the user to see and control exactly which executable, profile, address, and port are in
   use.
 
-Use a dedicated persistent profile that no other Chrome process owns. Chrome 136 and newer
-require a non-default profile for remote debugging. Bind CDP to loopback, ask Chrome to allocate
-an available port, and read the result from `DevToolsActivePort` in the profile directory.
+Use a dedicated persistent profile. Chrome 136 and newer require a non-default profile for remote
+debugging. Bind CDP to loopback, ask Chrome to allocate an available port, and discover the
+browser through `DevToolsActivePort` in the profile directory.
+
+Do not infer profile ownership by parsing process command lines. First probe the endpoint recorded
+in `DevToolsActivePort`; reuse it when it responds and its browser WebSocket path matches the
+file. Otherwise remove the stale file, launch Chrome, and wait with a timeout for Chrome to
+publish a new working endpoint. Chrome's own process-singleton mechanism prevents two browser
+instances from owning the same profile.
 
 A visible browser is mandatory for bank work, which needs sign-in, CAPTCHA, consent, and
 multi-factor prompts. The profile retains browser data but does not guarantee that authentication
@@ -62,8 +68,9 @@ will remain valid; ask the user to sign in again when needed.
 
 Do not continue until all browser postconditions hold:
 
-- the DevTools version endpoint responds on the allocated loopback port;
-- the browser process uses the expected profile and owns a visible window.
+- `DevToolsActivePort` identifies the same browser as the DevTools version endpoint;
+- the endpoint responds on loopback;
+- a visible browser window exists.
 
 Check the current CLI daemon before changing it. Reuse it when it already targets this browser
 endpoint with the extension category enabled. Otherwise preserve it and create a session-scoped
@@ -77,40 +84,74 @@ is available.
 
 ### Windows PowerShell reference
 
-The reference below launches Chrome, discovers its endpoint, verifies the visible browser, and
-connects a scoped CLI daemon. If `status` already reports the same browser URL and the extension
-category, reuse that daemon and omit `--sessionId` from later commands.
+The reference below reuses a working browser endpoint or launches Chrome and waits for a fresh
+one, then connects a scoped CLI daemon. If `status` already reports the same browser URL and the
+extension category, reuse that daemon and omit `--sessionId` from later commands.
 
 ```powershell
 $chrome = "C:\Program Files\Google\Chrome\Application\chrome.exe"
 $profile = "$HOME\.cache\Google\Chrome\bank-sync"
 $chromeDevtools = ".\node_modules\.bin\chrome-devtools.cmd"
+$portFile = Join-Path $profile "DevToolsActivePort"
 
-$profileOwner = Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe'" |
-  Where-Object {
-    $_.CommandLine -match '--user-data-dir=(?:"[^"]*[\\/]bank-sync"|\S*[\\/]bank-sync)(?=[\s]|$)'
+function Get-ActiveBrowserUrl {
+  if (-not (Test-Path $portFile)) {
+    return $null
   }
-if ($profileOwner) {
-  throw "The bank-sync profile is already open."
+
+  $portFileContent = Get-Content $portFile
+  if ($portFileContent.Count -lt 2 -or $portFileContent[0] -notmatch '^\d+$') {
+    Write-Verbose "Ignoring an invalid DevToolsActivePort file."
+    return $null
+  }
+
+  $candidate = "http://127.0.0.1:$($portFileContent[0])"
+  try {
+    $version = Invoke-RestMethod "$candidate/json/version" -TimeoutSec 2
+  } catch {
+    Write-Verbose "Ignoring a stale DevTools endpoint: $($_.Exception.Message)"
+    return $null
+  }
+
+  if (([uri]$version.webSocketDebuggerUrl).PathAndQuery -ne $portFileContent[1]) {
+    Write-Verbose "Ignoring a DevTools endpoint for a different browser."
+    return $null
+  }
+
+  return $candidate
 }
 
-& $chrome `
-  --remote-debugging-address=127.0.0.1 `
-  --remote-debugging-port=0 `
-  "--user-data-dir=$profile"
+$reuseDeadline = (Get-Date).AddSeconds(5)
+do {
+  $browserUrl = Get-ActiveBrowserUrl
+  if (-not $browserUrl -and (Test-Path $portFile)) {
+    Start-Sleep -Milliseconds 250
+  }
+} while (-not $browserUrl -and (Test-Path $portFile) -and (Get-Date) -lt $reuseDeadline)
 
-$port = Get-Content (Join-Path $profile "DevToolsActivePort") -TotalCount 1
-$browserUrl = "http://127.0.0.1:$port"
+if (-not $browserUrl) {
+  Remove-Item $portFile -Force -ErrorAction SilentlyContinue
+
+  & $chrome `
+    --remote-debugging-address=127.0.0.1 `
+    --remote-debugging-port=0 `
+    "--user-data-dir=$profile"
+
+  $deadline = (Get-Date).AddSeconds(20)
+  do {
+    $browserUrl = Get-ActiveBrowserUrl
+    if (-not $browserUrl) {
+      Start-Sleep -Milliseconds 250
+    }
+  } while (-not $browserUrl -and (Get-Date) -lt $deadline)
+
+  if (-not $browserUrl) {
+    throw "Chrome did not publish a working DevTools endpoint."
+  }
+}
+
 Invoke-RestMethod "$browserUrl/json/version" |
   Select-Object Browser, "Protocol-Version", webSocketDebuggerUrl
-
-Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe'" |
-  Where-Object {
-    $_.CommandLine -notmatch '--type=' -and
-    $_.CommandLine -match '--user-data-dir=(?:"[^"]*[\\/]bank-sync"|\S*[\\/]bank-sync)(?=[\s]|$)'
-  } |
-  ForEach-Object { Get-Process -Id $_.ProcessId } |
-  Select-Object Id, MainWindowTitle, MainWindowHandle
 
 & $chromeDevtools status
 $sessionId = [guid]::NewGuid().ToString()
@@ -122,9 +163,6 @@ $sessionId = [guid]::NewGuid().ToString()
 & $chromeDevtools list_pages --sessionId=$sessionId
 & $chromeDevtools list_extensions --sessionId=$sessionId
 ```
-
-Match the `--user-data-dir` flag rather than a bare `bank-sync` substring, anchor the end of the
-path, and exclude `--type=` processes. Every child process inherits the profile path.
 
 ## 3. Operate the extension
 
@@ -140,16 +178,19 @@ daemon:
 - Stopping and restarting the daemon leaves the extension installed while Chrome keeps running.
 - Closing and restarting Chrome removes the unpacked extension even when the same profile is
   reused, so reconnect the daemon and run `install_extension` again.
-- Reinstalling from the same absolute path restores the same extension ID and its existing
-  `chrome.storage.local` data from the persistent profile.
+- In the controlled restart test for this extension, reinstalling from the same absolute path
+  returned the same ID and restored its existing `chrome.storage.local` data.
 
 These behaviors were verified by controlled restarts with a temporary storage marker that was
 removed after the test. Never infer extension state from the daemon lifecycle or an earlier
 successful command; verify it with `list_extensions`.
 
-The install path is the directory containing `manifest.json`. The extension ID is derived from
-that absolute path, so it is stable across restarts and reinstalls from the same path; re-read it
-from `list_extensions` only when the path changes.
+The install path is the directory containing `manifest.json`. Chrome assigns the extension ID
+when it loads the extension. A manifest
+[`key`](https://developer.chrome.com/docs/extensions/reference/manifest/key) maintains a
+consistent ID during development, while an unpacked extension without a key can depend on its
+path. Capture the ID returned by every `install_extension` call and confirm it with
+`list_extensions`; never infer it from the path.
 
 When an installed unpacked extension's sources change, connect the daemon and run
 `reload_extension <id>`. This reloads the same path without changing the ID or requiring an
