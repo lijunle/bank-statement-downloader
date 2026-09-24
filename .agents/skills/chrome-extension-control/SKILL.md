@@ -53,13 +53,13 @@ Launch Chrome directly and then connect the CLI daemon to its TCP DevTools endpo
   use.
 
 Use a dedicated persistent profile. Chrome 136 and newer require a non-default profile for remote
-debugging. Bind CDP to loopback, ask Chrome to allocate an available port, and discover the
-browser through `DevToolsActivePort` in the profile directory.
+debugging. Bind CDP to loopback and have the shell choose an unused random port to pass explicitly
+to Chrome.
 
 Do not infer profile ownership by parsing process command lines. First probe the endpoint recorded
 in `DevToolsActivePort`; reuse it when it responds and its browser WebSocket path matches the
-file. Otherwise remove the stale file, launch Chrome, and wait with a timeout for Chrome to
-publish a new working endpoint. Chrome's own process-singleton mechanism prevents two browser
+file. Otherwise remove the stale file, launch Chrome, and wait with a timeout for a new working
+endpoint. Chrome's own process-singleton mechanism prevents two browser
 instances from owning the same profile.
 
 A visible browser is mandatory for bank work, which needs sign-in, CAPTCHA, consent, and
@@ -132,21 +132,36 @@ do {
 if (-not $browserUrl) {
   Remove-Item $portFile -Force -ErrorAction SilentlyContinue
 
+  $usedPorts = [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners().Port
+  do {
+    $port = Get-Random -Minimum 49152 -Maximum 65536
+  } while ($port -in $usedPorts)
+
   & $chrome `
     --remote-debugging-address=127.0.0.1 `
-    --remote-debugging-port=0 `
+    "--remote-debugging-port=$port" `
     "--user-data-dir=$profile"
 
   $deadline = (Get-Date).AddSeconds(20)
   do {
-    $browserUrl = Get-ActiveBrowserUrl
+    try {
+      $version = Invoke-RestMethod "http://127.0.0.1:$port/json/version" -TimeoutSec 2
+    } catch {
+      Write-Verbose "Waiting for Chrome's DevTools endpoint: $($_.Exception.Message)"
+      $version = $null
+    }
+    if ($version) {
+      @("$port", ([uri]$version.webSocketDebuggerUrl).PathAndQuery) |
+        Set-Content $portFile -ErrorAction Stop
+      $browserUrl = Get-ActiveBrowserUrl
+    }
     if (-not $browserUrl) {
       Start-Sleep -Milliseconds 250
     }
   } while (-not $browserUrl -and (Get-Date) -lt $deadline)
 
   if (-not $browserUrl) {
-    throw "Chrome did not publish a working DevTools endpoint."
+    throw "Chrome did not expose a working DevTools endpoint."
   }
 }
 
