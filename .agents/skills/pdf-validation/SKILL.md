@@ -48,7 +48,7 @@ output fields, diagnostic codes, exit semantics, and examples:
 ## Inspect metadata
 
 ```powershell
-& .\.venv\Scripts\python.exe -X utf8 .\validate_pdf.py inspect 'C:\private\document.pdf'
+& .\.venv\Scripts\python.exe -X utf8 .\validate_pdf.py inspect --file 'C:\private\document.pdf'
 ```
 
 No stdin is required. The result contains metadata, not render or search results:
@@ -64,7 +64,7 @@ operation incomplete. Callers must interpret the metadata, not just the exit cod
 ## Check rendering
 
 ```powershell
-& .\.venv\Scripts\python.exe -X utf8 .\validate_pdf.py render 'C:\private\document.pdf'
+& .\.venv\Scripts\python.exe -X utf8 .\validate_pdf.py render --file 'C:\private\document.pdf'
 ```
 
 No text or stdin is needed. Every page is rendered at 72 DPI, then its bitmap is
@@ -81,16 +81,18 @@ not counted as success. Other page-rendering failures return `FAILED`.
 
 ## Match one text value
 
-Pipe one nonempty UTF-8 text value directly to stdin. No JSON, page numbers, extra
-flags, or batch protocol are needed. This example uses synthetic text:
+Provide `--file` and `--text VALUE`. Named arguments may appear in either order.
+No stdin, JSON, page numbers, or batch protocol is needed. This example uses
+synthetic text:
 
 ```powershell
-$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-'Reference ABC-123' | & .\.venv\Scripts\python.exe -X utf8 .\validate_pdf.py match 'C:\private\document.pdf'
+& .\.venv\Scripts\python.exe -X utf8 .\validate_pdf.py match --file 'C:\private\document.pdf' --text 'Reference ABC-123'
 ```
 
-All stdin until EOF is one literal search value. A UTF-8 BOM is accepted; line
-breaks and whitespace are collapsed in both the input and extracted page text.
+Both named arguments are required. Empty or whitespace-only text is rejected.
+The tool never reads stdin.
+For a literal beginning with `--`, use `--text=VALUE` to avoid option parsing.
+Line breaks and whitespace are collapsed in both the input and extracted page text.
 Matching is case-sensitive and stays within each page: no regex, date conversion,
 or matching across page boundaries. Every page is searched to report all matches.
 
@@ -115,13 +117,13 @@ consciously for large documents. Do not invent expected values from the candidat
 PDF merely to obtain a match. Literal occurrences are evidence, not semantic
 identity; report their page numbers and let the caller interpret the results.
 
-Use a private local source for real search values. Do not put them in command-line
-arguments, logged shell literals, reports, or repository files. The script consumes
-the private stdin stream locally and does not echo it.
+The `--text` value can appear in process arguments, shell history, or tool logs
+even though the script does not echo it. Treat invocations containing private
+values as sensitive; do not copy or publish them in repositories or reports.
 
 ## Common operating rules
 
-- Supply an exact local file, never a wildcard, arbitrary latest download, or
+- Supply `--file` with an exact local file, never a wildcard, arbitrary latest download, or
   substitute older copy. Keep the same unchanged file when combining operations;
   per-invocation size/time checks do not establish provenance across invocations.
 - Each command returns only its own fields plus `status`, `warnings`, and `errors`.

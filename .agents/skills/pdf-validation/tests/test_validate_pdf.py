@@ -48,9 +48,11 @@ class PdfCapabilityTests(unittest.TestCase):
         command = [sys.executable, "-X", "utf8"]
         if no_site:
             command.append("-S")
-        command.extend([str(SCRIPT), operation, str(path or self.pdf), *extra])
-        payload = text.encode("utf-8") if isinstance(text, str) else text
-        process = subprocess.run(command, input=payload, capture_output=True, timeout=30)
+        command.extend([str(SCRIPT), operation, "--file", str(path or self.pdf)])
+        if operation == "match":
+            command.extend(["--text", text])
+        command.extend(extra)
+        process = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
         self.assertEqual(process.stderr, b"", "Do not leak raw diagnostics")
         self.assertEqual(len(process.stdout.splitlines()), 1)
         result = json.loads(process.stdout)
@@ -60,10 +62,12 @@ class PdfCapabilityTests(unittest.TestCase):
     def call_main(self, operation="match", text="Reference ABC-123"):
         output, errors = io.StringIO(), io.StringIO()
         with (
-            patch.object(validator, "read_expected_text", return_value=text),
             redirect_stdout(output), redirect_stderr(errors),
         ):
-            code = validator.main([operation, str(self.pdf)])
+            args = [operation, "--file", str(self.pdf)]
+            if operation == "match":
+                args.extend(["--text", text])
+            code = validator.main(args)
         self.assertEqual(errors.getvalue(), "")
         self.assertEqual(len(output.getvalue().splitlines()), 1)
         self.assertNotIn("PRIVATE_", output.getvalue())
@@ -94,10 +98,12 @@ class PdfCapabilityTests(unittest.TestCase):
     def test_inspect_loads_no_pages_and_reads_no_stdin(self):
         with (
             patch.object(pymupdf.Document, "load_page", side_effect=AssertionError("No pages")),
-            patch.object(validator, "read_expected_text", side_effect=AssertionError("No stdin")),
+            patch.object(sys, "stdin") as stdin,
             redirect_stdout(io.StringIO()) as output,
         ):
-            code = validator.main(["inspect", str(self.pdf)])
+            code = validator.main(["inspect", "--file", str(self.pdf)])
+            stdin.read.assert_not_called()
+            stdin.buffer.read.assert_not_called()
         result = json.loads(output.getvalue())
         self.assertEqual(code, 0)
         self.assertEqual(result["bytes"], self.pdf.stat().st_size)
@@ -153,6 +159,67 @@ class PdfCapabilityTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(result["result"], expected)
 
+    def test_named_text_and_file_work_in_either_order_without_reading_stdin(self):
+        for args in [
+            ["match", "--file", str(self.pdf), "--text", "Reference ABC-123"],
+            ["match", "--text", "Reference ABC-123", "--file", str(self.pdf)],
+        ]:
+            with self.subTest(text_first=args[1] == "--text"):
+                output, errors = io.StringIO(), io.StringIO()
+                with (
+                    patch.object(sys, "stdin") as stdin,
+                    redirect_stdout(output), redirect_stderr(errors),
+                ):
+                    code = validator.main(args)
+                    stdin.read.assert_not_called()
+                    stdin.buffer.read.assert_not_called()
+                self.assertEqual(code, 0)
+                result = json.loads(output.getvalue())
+                self.assertEqual(result["result"], "FOUND")
+                self.assertEqual(result["matchedPages"], [1])
+                self.assertEqual(errors.getvalue(), "")
+                self.assertNotIn("Reference ABC-123", output.getvalue())
+
+    def test_named_file_and_text_are_required_and_errors_do_not_echo_values(self):
+        cases = [
+            ["match", "--file", str(self.pdf)],
+            ["match", "--file", str(self.pdf), "--text", "PRIVATE_VALUE", "--text-stdin"],
+            ["match", "--text", "PRIVATE_VALUE"],
+            ["inspect"],
+            ["render"],
+            ["inspect", str(self.pdf)],
+            ["match", str(self.pdf), "--text", "PRIVATE_VALUE"],
+            ["inspect", "--file", str(self.pdf), "--text", "PRIVATE_VALUE"],
+            ["render", "--file", str(self.pdf), "--text-stdin"],
+        ]
+        for args in cases:
+            with self.subTest(command=args[0]):
+                output, errors = io.StringIO(), io.StringIO()
+                with (
+                    patch.object(sys, "stdin") as stdin,
+                    redirect_stdout(output), redirect_stderr(errors),
+                ):
+                    code = validator.main(args)
+                    stdin.read.assert_not_called()
+                    stdin.buffer.read.assert_not_called()
+                self.assertEqual(code, 2)
+                self.assertEqual(json.loads(output.getvalue()), {
+                    "status": "INCOMPLETE", "warnings": [], "errors": ["INVALID_ARGUMENTS"],
+                })
+                self.assertEqual(errors.getvalue(), "")
+                self.assertNotIn("PRIVATE_VALUE", output.getvalue())
+                self.assertNotIn(str(self.pdf), output.getvalue())
+
+    def test_option_like_search_text_is_supported_with_equals(self):
+        path = self.make_pdf("option-like.pdf", ["--reference"])
+        process = subprocess.run(
+            [sys.executable, str(SCRIPT), "match", "--file", str(path), "--text=--reference"],
+            capture_output=True, timeout=30,
+        )
+        self.assertEqual(process.returncode, 0)
+        self.assertEqual(process.stderr, b"")
+        self.assertEqual(json.loads(process.stdout)["result"], "FOUND")
+
     def test_match_is_case_sensitive_and_literal_with_collapsed_whitespace(self):
         for text, expected in [
             ("  Reference \t ABC-123 \r\n", "FOUND"),
@@ -172,61 +239,27 @@ class PdfCapabilityTests(unittest.TestCase):
         self.assertEqual(result["result"], "NOT_FOUND")
         self.assertEqual(result["matchedPages"], [])
 
-    def test_stdin_is_literal_text_not_a_json_or_batch_protocol(self):
+    def test_named_text_is_literal_not_a_json_or_batch_protocol(self):
         source = '{"checks":[{"text":"PRIVATE_VALUE","pages":[1]}]}'
         code, result = self.run_cli(text=source)
         self.assertEqual(code, 0)
         self.assertEqual(result["result"], "NOT_FOUND")
         self.assertNotIn("PRIVATE_VALUE", json.dumps(result))
 
-    def test_empty_stdin_is_not_an_implicit_match(self):
-        for text in [b"", " \n\t"]:
+    def test_empty_named_text_is_not_an_implicit_match(self):
+        for text in ["", " \n\t"]:
             code, result = self.run_cli(text=text)
             self.assertEqual(code, 2)
             self.assertEqual(result["result"], "NOT_RUN")
             self.assertEqual(result["errors"], ["TEXT_REQUIRED"])
             self.assertEqual(result["status"], "INCOMPLETE")
 
-    def test_match_does_not_prompt_for_text_on_an_interactive_terminal(self):
-        output = io.StringIO()
-        with patch.object(sys, "stdin") as stdin, redirect_stdout(output):
-            stdin.isatty.return_value = True
-            code = validator.main(["match", str(self.pdf)])
-            stdin.buffer.read.assert_not_called()
-        self.assertEqual(code, 2)
-        self.assertEqual(json.loads(output.getvalue())["errors"], ["TEXT_REQUIRED"])
-
-    def test_unicode_paths_and_utf8_bom_text(self):
+    def test_unicode_paths_and_named_text(self):
         path = self.make_pdf("synthetic \u62a5\u544a \u00ae.pdf", ["Caf\u00e9 reference"])
-        code, result = self.run_cli(path=path, text=b"\xef\xbb\xbf" + "Caf\u00e9".encode("utf-8"))
+        code, result = self.run_cli(path=path, text="Caf\u00e9")
         self.assertEqual(code, 0)
         self.assertEqual(result["result"], "FOUND")
         self.assertNotIn("Caf", json.dumps(result))
-
-    def test_invalid_utf8_is_sanitized(self):
-        code, result = self.run_cli(text=b"PRIVATE_TEXT\xff")
-        self.assertEqual(code, 2)
-        self.assertEqual(result["errors"], ["INVALID_TEXT_ENCODING"])
-        self.assertNotIn("PRIVATE_TEXT", json.dumps(result))
-
-    def test_stdin_read_failures_return_sanitized_input_errors(self):
-        for error, expected in [
-            (OSError("PRIVATE_SOURCE"), "TEXT_UNREADABLE"),
-            (MemoryError("PRIVATE_SOURCE"), "TEXT_RESOURCE_LIMIT"),
-        ]:
-            with self.subTest(expected=expected):
-                output, errors = io.StringIO(), io.StringIO()
-                with (
-                    patch.object(sys, "stdin") as stdin,
-                    redirect_stdout(output), redirect_stderr(errors),
-                ):
-                    stdin.isatty.return_value = False
-                    stdin.buffer.read.side_effect = error
-                    code = validator.main(["match", str(self.pdf)])
-                self.assertEqual(code, 2)
-                self.assertEqual(json.loads(output.getvalue())["errors"], [expected])
-                self.assertEqual(errors.getvalue(), "")
-                self.assertNotIn("PRIVATE_SOURCE", output.getvalue())
 
     def test_expected_text_normalization_failure_is_sanitized(self):
         class ExhaustedText(str):
@@ -252,9 +285,9 @@ class PdfCapabilityTests(unittest.TestCase):
         self.assertEqual(result.errors, ["INVALID_OPERATION"])
         self.assertNotIn("PRIVATE_OPERATION", str(result))
 
-    def test_removed_flags_and_argv_search_text_are_rejected(self):
+    def test_removed_flags_and_positional_search_text_are_rejected(self):
         for extra in [
-            ["--options-stdin"], ["--pages", "1"], ["--render-pages", "1"],
+            ["--text-stdin"], ["--options-stdin"], ["--pages", "1"], ["--render-pages", "1"],
             ["--render-dir", str(self.folder)], ["--password", "PRIVATE_VALUE"],
             ["PRIVATE_VALUE"],
         ]:
@@ -516,6 +549,10 @@ class PdfCapabilityTests(unittest.TestCase):
                     self.assertIn(section.lower(), result.stdout.lower())
                 for field in COMMAND_FIELDS[operation]:
                     self.assertIn(field, result.stdout)
+                self.assertIn("--file", result.stdout)
+                if operation == "match":
+                    self.assertIn("--text TEXT", result.stdout)
+                    self.assertNotIn("--text-stdin", result.stdout)
             else:
                 for name in COMMAND_FIELDS:
                     self.assertIn(name, result.stdout)

@@ -75,20 +75,6 @@ def normalize_expected_text(text: str) -> str:
     return normalized
 
 
-def read_expected_text() -> str:
-    if sys.stdin.isatty():
-        raise InputError("TEXT_REQUIRED")
-    try:
-        text = sys.stdin.buffer.read().decode("utf-8-sig")
-    except UnicodeDecodeError:
-        raise InputError("INVALID_TEXT_ENCODING") from None
-    except OSError:
-        raise InputError("TEXT_UNREADABLE") from None
-    except MemoryError:
-        raise InputError("TEXT_RESOURCE_LIMIT") from None
-    return text
-
-
 def run_operation(path: Path, operation: str, text: str | None = None) -> Result:
     if operation not in RESULT_TYPES:
         return Result(errors=["INVALID_OPERATION"])
@@ -271,16 +257,16 @@ Inspect both the JSON and exit code. No password input, OCR, image export, or ne
 
 COMMAND_HELP = {
     "inspect": """\
-Input: the exact local file path. No stdin or content expectations required.
+Input: --file with the exact local file path. No stdin or content expectations required.
 Output JSON: status, warnings, errors, bytes, pages, passwordProtected, repaired.
 Unknown metadata is null. No pages are rendered and no text is extracted.
 Password protection is metadata, not an automatic failure for this operation.
 Exit 0 can include passwordProtected=true; caller policy decides acceptance.
 Example (PowerShell, using this skill's Python interpreter):
-  python validate_pdf.py inspect 'C:\\private\\document.pdf'
+  python validate_pdf.py inspect --file 'C:\\private\\document.pdf'
 """,
     "render": """\
-Input: the exact local file path. No stdin required.
+Input: --file with the exact local file path. No stdin required.
 Output JSON: status, warnings, errors, pages, renderedPages, failedPages, skippedPages.
 Counts start at zero; pages is null until known; page lists are one-based.
 All pages render in memory at 72 DPI, without extracting text or writing images.
@@ -289,12 +275,12 @@ Specific diagnostics: PASSWORD_PROTECTED, PAGE_RENDER_FAILED,
   PAGE_RENDER_LIMIT, PAGE_RENDER_RESOURCE_LIMIT.
 Exit 1 for a page rendering error; exit 2 for password protection or skipped pages.
 Example (PowerShell, using this skill's Python interpreter):
-  python validate_pdf.py render 'C:\\private\\document.pdf'
+  python validate_pdf.py render --file 'C:\\private\\document.pdf'
 """,
     "match": """\
-Input: exact file path + one nonempty UTF-8 text value on stdin (BOM accepted).
-No JSON, option flag, page selector, or batch protocol. EOF ends the input.
-The entire stdin is one literal; line breaks/whitespace are collapsed, not separate checks.
+Input: required --file with the exact path and --text with one nonempty literal.
+Named arguments may appear in either order. No stdin, JSON, page selector, or batch protocol.
+All supplied text is one literal; line breaks/whitespace are collapsed, not separate checks.
 Matching is case-sensitive, within each page, across the whole PDF. No regex or date conversion.
 Output JSON: status, warnings, errors, pages, searchedPages, result,
   matchedPages, failedPages, textlessPages. Page lists are one-based.
@@ -302,13 +288,13 @@ result: FOUND / NOT_FOUND / INCONCLUSIVE / NOT_RUN.
 FOUND and NOT_FOUND can both exit 0: absence is a completed search, not a tool failure.
 All pages are searched to report every match. Extraction errors keep status INCOMPLETE
 even if another page matched. Without a match, textless pages make absence INCONCLUSIVE.
-Specific diagnostics: TEXT_REQUIRED, INVALID_TEXT_ENCODING, TEXT_UNREADABLE,
-  TEXT_RESOURCE_LIMIT, TEXT_SEARCH_FAILED, PASSWORD_PROTECTED.
+Specific diagnostics: TEXT_REQUIRED, TEXT_RESOURCE_LIMIT, TEXT_SEARCH_FAILED, PASSWORD_PROTECTED.
 No PDF is rendered. Run once per expected value; each call reopens and extracts the file.
 Example (PowerShell, synthetic text only, using this skill's Python interpreter):
-  $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-  'Reference ABC-123' | python validate_pdf.py match 'C:\\private\\document.pdf'
-For sensitive text, pipe from a private source without logging it or putting it in arguments.
+  python validate_pdf.py match --file 'C:\\private\\document.pdf' --text 'Reference ABC-123'
+--text values may be visible in process arguments, shell history, or tool logs.
+Treat invocations containing private values as sensitive; do not publish or commit them.
+For a literal starting with '--', use --text=VALUE to avoid option parsing.
 """,
 }
 
@@ -324,20 +310,28 @@ def main(argv: list[str] | None = None) -> int:
     for name, description in (
         ("inspect", "Inspect PDF metadata without rendering or text extraction"),
         ("render", "Render every PDF page in memory without text extraction"),
-        ("match", "Search the whole PDF for one literal text value from stdin"),
+        ("match", "Search the whole PDF for one explicitly supplied literal text value"),
     ):
         command = commands.add_parser(
             name, help=description, description=description,
             epilog=COMMAND_HELP[name] + "\n" + COMMON_HELP,
             formatter_class=argparse.RawDescriptionHelpFormatter,
         )
-        command.add_argument("path", type=Path, help="Exact local PDF path; never auto-selected")
+        command.add_argument(
+            "--file", type=Path, required=True,
+            help="Exact local PDF path; never auto-selected",
+        )
+        if name == "match":
+            command.add_argument(
+                "--text", required=True,
+                help="One nonempty literal to find; note that process arguments may be logged",
+            )
     operation = None
     try:
         args = parser.parse_args(argv)
         operation = args.operation
-        text = read_expected_text() if operation == "match" else None
-        result = run_operation(args.path, operation, text)
+        text = args.text if operation == "match" else None
+        result = run_operation(args.file, operation, text)
     except InputError as error:
         result = RESULT_TYPES.get(operation, Result)(errors=[str(error)])
     print(json.dumps(asdict(result), ensure_ascii=True))
