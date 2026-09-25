@@ -106,6 +106,8 @@ a successful PDF-download end-to-end (E2E) result.
    the bank name, account name or account number/mask, and statement period.
    For consolidated statements, verify the expected account group. Obtain
    expectations from the selected bank account and statement, not the candidate PDF.
+   The agent must choose these expected values from the bank UI, invoke the skill,
+   and verify that its results confirm the selected bank, account/group, and period.
 3. Keep the same unchanged file throughout these checks. Record its byte count and
    whether the document and content checks completed successfully; retain only
    sanitized evidence in the result.
