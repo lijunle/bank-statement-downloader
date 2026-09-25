@@ -90,7 +90,6 @@ synthetic text:
 ```
 
 Both named arguments are required. Empty or whitespace-only text is rejected.
-The tool never reads stdin.
 For a literal beginning with `--`, use `--text=VALUE` to avoid option parsing.
 Line breaks and whitespace are collapsed in both the input and extracted page text.
 Matching is case-sensitive and stays within each page: no regex, date conversion,
