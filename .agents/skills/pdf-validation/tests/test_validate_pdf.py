@@ -220,10 +220,15 @@ class PdfCapabilityTests(unittest.TestCase):
         self.assertEqual(process.stderr, b"")
         self.assertEqual(json.loads(process.stdout)["result"], "FOUND")
 
-    def test_match_is_case_sensitive_and_literal_with_collapsed_whitespace(self):
+    def test_match_is_case_sensitive_and_preserves_whitespace(self):
         for text, expected in [
-            ("  Reference \t ABC-123 \r\n", "FOUND"),
+            ("Reference ABC-123", "FOUND"),
+            ("  Reference \t ABC-123 \r\n", "NOT_FOUND"),
             ("Reference ABC-123\nPeriod 2026-08", "FOUND"),
+            ("Reference ABC-123 Period 2026-08", "NOT_FOUND"),
+            ("Reference  ABC-123", "NOT_FOUND"),
+            (" Reference ABC-123", "NOT_FOUND"),
+            ("Reference ABC-123 ", "NOT_FOUND"),
             ("reference ABC-123", "NOT_FOUND"),
             ("ABC-.*", "NOT_FOUND"),
         ]:
@@ -231,6 +236,29 @@ class PdfCapabilityTests(unittest.TestCase):
                 code, result = self.run_cli(text=text)
                 self.assertEqual(code, 0)
                 self.assertEqual(result["result"], expected)
+
+    def test_exact_spaces_newlines_and_tabs_are_accepted_without_rewriting(self):
+        page_text = "  Reference  ABC-123\tPeriod\r\n2026-08  "
+        for text, expected in [
+            ("  Reference  ABC-123", "FOUND"),
+            ("ABC-123\tPeriod\r\n2026-08  ", "FOUND"),
+            ("Reference ABC-123", "NOT_FOUND"),
+            ("ABC-123 Period 2026-08", "NOT_FOUND"),
+            ("Period\n2026-08", "NOT_FOUND"),
+            ("  ", "FOUND"),
+            ("\t", "FOUND"),
+            ("\r\n", "FOUND"),
+        ]:
+            with self.subTest(text=text), patch.object(pymupdf.Page, "get_text", return_value=page_text):
+                code, result = self.call_main(text=text)
+            self.assertEqual(code, 0)
+            self.assertEqual(result["result"], expected)
+
+    def test_argument_with_only_whitespace_is_a_literal_search(self):
+        for text in [" ", "\n"]:
+            code, result = self.run_cli(text=text)
+            self.assertEqual(code, 0)
+            self.assertEqual(result["result"], "FOUND")
 
     def test_text_cannot_match_across_page_boundaries(self):
         path = self.make_pdf("two.pdf", ["Reference", "ABC-123"])
@@ -247,12 +275,11 @@ class PdfCapabilityTests(unittest.TestCase):
         self.assertNotIn("PRIVATE_VALUE", json.dumps(result))
 
     def test_empty_named_text_is_not_an_implicit_match(self):
-        for text in ["", " \n\t"]:
-            code, result = self.run_cli(text=text)
-            self.assertEqual(code, 2)
-            self.assertEqual(result["result"], "NOT_RUN")
-            self.assertEqual(result["errors"], ["TEXT_REQUIRED"])
-            self.assertEqual(result["status"], "INCOMPLETE")
+        code, result = self.run_cli(text="")
+        self.assertEqual(code, 2)
+        self.assertEqual(result["result"], "NOT_RUN")
+        self.assertEqual(result["errors"], ["TEXT_REQUIRED"])
+        self.assertEqual(result["status"], "INCOMPLETE")
 
     def test_unicode_paths_and_named_text(self):
         path = self.make_pdf("synthetic \u62a5\u544a \u00ae.pdf", ["Caf\u00e9 reference"])
@@ -261,22 +288,12 @@ class PdfCapabilityTests(unittest.TestCase):
         self.assertEqual(result["result"], "FOUND")
         self.assertNotIn("Caf", json.dumps(result))
 
-    def test_expected_text_normalization_failure_is_sanitized(self):
-        class ExhaustedText(str):
-            def split(self, *args, **kwargs):
-                raise MemoryError("PRIVATE_EXPECTED")
-
-        code, result = self.call_main(text=ExhaustedText("Reference"))
-        self.assertEqual(code, 2)
-        self.assertEqual(result["result"], "NOT_RUN")
-        self.assertEqual(result["errors"], ["TEXT_RESOURCE_LIMIT"])
-
     def test_inspect_and_render_reject_unused_text_in_direct_api(self):
         for operation in ["inspect", "render"]:
             result = validator.run_operation(self.pdf, operation, "Reference")
             self.assertEqual(result.exit_code(), 2)
             self.assertEqual(result.errors, ["TEXT_NOT_APPLICABLE"])
-        for text in [None, "", " \n"]:
+        for text in [None, ""]:
             result = validator.run_operation(self.pdf, "match", text)
             self.assertEqual(result.exit_code(), 2)
             self.assertEqual(result.errors, ["TEXT_REQUIRED"])
@@ -459,15 +476,10 @@ class PdfCapabilityTests(unittest.TestCase):
         self.assertEqual(result["failedPages"], [1])
         self.assertIn("PAGE_RENDER_FAILED", result["errors"])
 
-    def test_extraction_memory_and_normalization_failures_return_json(self):
-        class ExhaustedText(str):
-            def split(self, *args, **kwargs):
-                raise MemoryError("PRIVATE_TEXT")
-
+    def test_extraction_failures_return_json(self):
         for mock_options in [
             {"side_effect": RuntimeError("PRIVATE_TEXT")},
             {"side_effect": MemoryError("PRIVATE_TEXT")},
-            {"return_value": ExhaustedText("Reference")},
         ]:
             with patch.object(pymupdf.Page, "get_text", **mock_options):
                 code, result = self.call_main()
@@ -476,6 +488,17 @@ class PdfCapabilityTests(unittest.TestCase):
             self.assertEqual(result["failedPages"], [1])
             self.assertEqual(result["searchedPages"], 0)
             self.assertIn("TEXT_SEARCH_FAILED", result["errors"])
+
+    def test_literal_search_memory_failure_returns_json(self):
+        class ExhaustedPageText(str):
+            def __contains__(self, value):
+                raise MemoryError("PRIVATE_SEARCH")
+
+        with patch.object(pymupdf.Page, "get_text", return_value=ExhaustedPageText("Reference")):
+            code, result = self.call_main()
+        self.assertEqual(code, 2)
+        self.assertEqual(result["result"], "INCONCLUSIVE")
+        self.assertIn("TEXT_SEARCH_FAILED", result["errors"])
 
     def test_match_result_allocation_failure_returns_json(self):
         class ExhaustedMatches(list):

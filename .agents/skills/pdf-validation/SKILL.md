@@ -89,11 +89,13 @@ synthetic text:
 & .\.venv\Scripts\python.exe -X utf8 .\validate_pdf.py match --file 'C:\private\document.pdf' --text 'Reference ABC-123'
 ```
 
-Both named arguments are required. Empty or whitespace-only text is rejected.
+Both named arguments are required. An empty string is rejected.
 For a literal beginning with `--`, use `--text=VALUE` to avoid option parsing.
-Line breaks and whitespace are collapsed in both the input and extracted page text.
-Matching is case-sensitive and stays within each page: no regex, date conversion,
-or matching across page boundaries. Every page is searched to report all matches.
+Search text is used exactly as supplied, and extracted page text is not rewritten.
+Repeated spaces, line breaks, and tabs are literal characters. Matching is
+case-sensitive and stays within each page: no trimming, whitespace normalization,
+regex, date conversion, or matching across page boundaries. Every page is searched
+to report all matches.
 
 ```json
 {"status":"COMPLETE","warnings":[],"errors":[],"pages":2,"searchedPages":2,"result":"FOUND","matchedPages":[1],"failedPages":[],"textlessPages":[]}
@@ -107,7 +109,7 @@ or matching across page boundaries. Every page is searched to report all matches
   Blank and image-only pages are listed in `textlessPages`, not declared corrupt.
 - `NOT_RUN`: invalid input or a prerequisite prevented searching.
 
-`searchedPages` counts successfully extracted/normalized pages, including empty
+`searchedPages` counts successfully searched pages, including empty
 ones. `failedPages` records page-loading, extraction, or search failures.
 
 For multiple expected fields, make separate calls. Each reopens the file and

@@ -65,16 +65,6 @@ class MatchResult(Result):
 RESULT_TYPES = {"inspect": InspectResult, "render": RenderResult, "match": MatchResult}
 
 
-def normalize_expected_text(text: str) -> str:
-    try:
-        normalized = " ".join(text.split())
-    except MemoryError:
-        raise InputError("TEXT_RESOURCE_LIMIT") from None
-    if not normalized:
-        raise InputError("TEXT_REQUIRED")
-    return normalized
-
-
 def run_operation(path: Path, operation: str, text: str | None = None) -> Result:
     if operation not in RESULT_TYPES:
         return Result(errors=["INVALID_OPERATION"])
@@ -83,13 +73,8 @@ def run_operation(path: Path, operation: str, text: str | None = None) -> Result
         result.errors.append("TEXT_NOT_APPLICABLE")
         return result
     if operation == "match":
-        if not isinstance(text, str):
+        if not isinstance(text, str) or not text:
             result.errors.append("TEXT_REQUIRED")
-            return result
-        try:
-            expected = normalize_expected_text(text)
-        except InputError as error:
-            result.errors.append(str(error))
             return result
 
     try:
@@ -204,11 +189,11 @@ def run_operation(path: Path, operation: str, text: str | None = None) -> Result
             for number in range(1, result.pages + 1):
                 try:
                     page = document.load_page(number - 1)
-                    page_text = " ".join(page.get_text().split())
+                    page_text = page.get_text()
                     try:
-                        if expected in page_text:
+                        if text in page_text:
                             result.matchedPages.append(number)
-                        if not page_text:
+                        if not page_text or page_text.isspace():
                             result.textlessPages.append(number)
                     finally:
                         del page_text
@@ -280,7 +265,8 @@ Example (PowerShell, using this skill's Python interpreter):
     "match": """\
 Input: required --file with the exact path and --text with one nonempty literal.
 Named arguments may appear in either order. No stdin, JSON, page selector, or batch protocol.
-All supplied text is one literal; line breaks/whitespace are collapsed, not separate checks.
+Search --text exactly as supplied in the extracted text. Neither string is trimmed or rewritten.
+Repeated spaces, line breaks, and tabs are literal characters, not separators or separate checks.
 Matching is case-sensitive, within each page, across the whole PDF. No regex or date conversion.
 Output JSON: status, warnings, errors, pages, searchedPages, result,
   matchedPages, failedPages, textlessPages. Page lists are one-based.
@@ -288,7 +274,7 @@ result: FOUND / NOT_FOUND / INCONCLUSIVE / NOT_RUN.
 FOUND and NOT_FOUND can both exit 0: absence is a completed search, not a tool failure.
 All pages are searched to report every match. Extraction errors keep status INCOMPLETE
 even if another page matched. Without a match, textless pages make absence INCONCLUSIVE.
-Specific diagnostics: TEXT_REQUIRED, TEXT_RESOURCE_LIMIT, TEXT_SEARCH_FAILED, PASSWORD_PROTECTED.
+Specific diagnostics: TEXT_REQUIRED, TEXT_SEARCH_FAILED, PASSWORD_PROTECTED.
 No PDF is rendered. Run once per expected value; each call reopens and extracts the file.
 Example (PowerShell, synthetic text only, using this skill's Python interpreter):
   python validate_pdf.py match --file 'C:\\private\\document.pdf' --text 'Reference ABC-123'

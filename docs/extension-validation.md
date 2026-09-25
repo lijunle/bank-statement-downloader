@@ -125,7 +125,9 @@ a successful PDF-download end-to-end (E2E) result.
    its filename, or rely on an isolated short mask or generic product name.
    Run **`match` once per expected field**, supplying that one value through
    `--text`. It searches the whole PDF and returns matching page numbers;
-   no JSON batch or page selection is required. Multiple fields mean multiple
+   the supplied value and extracted text are compared literally, without trimming
+   or whitespace normalization.
+   No JSON batch or page selection is required. Multiple fields mean multiple
    calls on the same file, not multiple values in one `--text` argument. All required
    fields must have `status: COMPLETE` and `result: FOUND`; a completed search
    returning `NOT_FOUND` is not a pass for this workflow, even though the command
