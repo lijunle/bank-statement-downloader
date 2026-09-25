@@ -57,7 +57,7 @@ class PdfValidationTests(unittest.TestCase):
         self.assertNotIn(str(self.folder), result.stdout)
         return result.returncode, report
 
-    def test_valid_pdf_is_read_only_and_exports_nothing_by_default(self):
+    def test_valid_pdf_is_read_only_and_writes_no_images_or_text(self):
         before = hashlib.sha256(self.pdf.read_bytes()).hexdigest()
         code, result = self.run_cli()
         self.assertEqual(code, 0)
@@ -68,9 +68,31 @@ class PdfValidationTests(unittest.TestCase):
         self.assertEqual(result["contentCheck"], "FOUND")
         self.assertEqual(result["checks"][0]["matchedPages"], [1])
         self.assertEqual(result["warnings"], [])
-        self.assertEqual(result["exportedPages"], [])
-        self.assertEqual(list(self.folder.glob("*.png")), [])
+        self.assertNotIn("exportedPages", result)
+        self.assertEqual(list(self.folder.iterdir()), [self.pdf])
+        self.assertNotIn("Reference ABC-123", json.dumps(result))
+        self.assertNotIn("Period 2026-08", json.dumps(result))
         self.assertEqual(hashlib.sha256(self.pdf.read_bytes()).hexdigest(), before)
+
+    def test_every_page_is_rendered_in_memory_without_encoding_images(self):
+        path = self.make_pdf("three.pdf", ["Reference ABC-123", "", "Last page"])
+        rendered_pages = []
+        original = pymupdf.Page.get_pixmap
+
+        def render(page, **kwargs):
+            rendered_pages.append(page.number + 1)
+            return original(page, **kwargs)
+
+        with (
+            patch.object(pymupdf.Page, "get_pixmap", render),
+            patch.object(pymupdf.Pixmap, "tobytes", side_effect=AssertionError("No image encoding")),
+        ):
+            report = validator.inspect_pdf(path, [validator.TextCheck("Reference", [1])])
+        self.assertEqual(report.exit_code(), 0)
+        self.assertEqual(rendered_pages, [1, 2, 3])
+        self.assertEqual(report.render, "PASS")
+        self.assertEqual(report.contentCheck, "FOUND")
+        self.assertEqual(set(self.folder.iterdir()), {self.pdf, path})
 
     def test_unicode_paths_and_spaces(self):
         path = self.make_pdf("synthetic \u62a5\u544a \u00ae.pdf", ["Private sample"])
@@ -94,16 +116,13 @@ class PdfValidationTests(unittest.TestCase):
         self.assertEqual(result["pages"], 2)
         self.assertEqual(result["render"], "PASS")
         self.assertEqual(result["contentCheck"], "INCONCLUSIVE")
-        output = self.folder / "private-images"
-        output.mkdir()
         code, result = self.run_cli(path, options={
             "checks": [{"text": "A reference", "pages": [1, 2]}],
-        }, extra=["--render-dir", str(output), "--render-pages", "1"])
+        })
         self.assertEqual(code, 2)
         self.assertEqual(result["render"], "PASS")
         self.assertEqual(result["contentCheck"], "INCONCLUSIVE")
-        self.assertEqual(result["exportedPages"], [1])
-        self.assertTrue((output / "page-0001.png").is_file())
+        self.assertEqual(set(self.folder.iterdir()), {self.pdf, path})
 
     def test_content_checks_cannot_be_omitted(self):
         for options in [None, {}, {"checks": []}]:
@@ -116,7 +135,7 @@ class PdfValidationTests(unittest.TestCase):
                 self.assertNotIn("PRIVATE_VALUE", json.dumps(result))
 
     def test_direct_inspection_requires_checks_too(self):
-        report = validator.inspect_pdf(self.pdf, [], None, [])
+        report = validator.inspect_pdf(self.pdf, [])
         self.assertEqual(report.exit_code(), 2)
         self.assertEqual(report.errors, ["CHECKS_REQUIRED"])
         self.assertEqual(report.parse, "NOT_RUN")
@@ -216,22 +235,19 @@ class PdfValidationTests(unittest.TestCase):
         self.assertIn(code, (1, 2))
         self.assertNotEqual(result["parse"], "PASS")
 
-    def test_password_protected_pdf_fails_without_unlocking_or_exporting(self):
+    def test_password_protected_pdf_fails_without_unlocking_or_rendering(self):
         path = self.make_pdf(
             "encrypted.pdf", ["Private reference"],
             encryption=pymupdf.PDF_ENCRYPT_AES_256,
             user_pw="synthetic-password", owner_pw="synthetic-owner",
         )
         before = hashlib.sha256(path.read_bytes()).hexdigest()
-        code, result = self.run_cli(
-            path, extra=["--render-dir", str(self.folder), "--render-pages", "1"],
-        )
+        code, result = self.run_cli(path)
         self.assertEqual(code, 1)
         self.assertEqual(result["parse"], "FAIL")
         self.assertEqual(result["render"], "NOT_RUN")
         self.assertEqual(result["contentCheck"], "NOT_RUN")
         self.assertEqual(result["errors"], ["PASSWORD_PROTECTED"])
-        self.assertEqual(result["exportedPages"], [])
         self.assertEqual(list(self.folder.glob("*.png")), [])
         self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), before)
         self.assertNotIn("synthetic-password", json.dumps(result))
@@ -305,36 +321,19 @@ class PdfValidationTests(unittest.TestCase):
         self.assertIn("PAGE_OUT_OF_RANGE", result["errors"])
         self.assertEqual(result["contentCheck"], "NOT_RUN")
 
-    def test_exports_only_selected_pages_without_overwriting(self):
-        path = self.make_pdf("three.pdf", ["Page one", "", "Page three"])
-        output = self.folder / "private-render"
-        output.mkdir()
-        args = ["--render-dir", str(output), "--render-pages", "1", "3"]
-        options = {"checks": [{"text": "Page one", "pages": [1]}]}
-        code, result = self.run_cli(path, options=options, extra=args)
-        self.assertEqual(code, 0)
-        self.assertEqual(result["exportedPages"], [1, 3])
-        self.assertEqual(sorted(p.name for p in output.iterdir()), ["page-0001.png", "page-0003.png"])
-        first = (output / "page-0001.png").read_bytes()
-        self.assertTrue(first.startswith(b"\x89PNG"))
-        code, result = self.run_cli(path, options=options, extra=args)
-        self.assertEqual(code, 2)
-        self.assertIn("EXPORT_EXISTS", result["errors"])
-        self.assertEqual((output / "page-0001.png").read_bytes(), first)
-
-    def test_export_arguments_must_be_complete_and_valid(self):
+    def test_image_export_arguments_are_not_supported(self):
         for args in [
             ["--render-pages", "1"],
             ["--render-dir", str(self.folder)],
-            ["--render-dir", str(self.folder / "absent"), "--render-pages", "1"],
-            ["--render-dir", str(self.folder), "--render-pages", "2"],
-            ["--render-dir", str(self.folder), "--render-pages", "-1"],
+            ["--render-dir", str(self.folder), "--render-pages", "1"],
         ]:
             with self.subTest(args=args):
                 code, result = self.run_cli(extra=args)
                 self.assertEqual(code, 2)
-                self.assertTrue(result["errors"])
-                self.assertEqual(result["exportedPages"], [])
+                self.assertEqual(result["errors"], ["INVALID_ARGUMENTS"])
+                self.assertEqual(result["parse"], "NOT_RUN")
+                self.assertNotIn("exportedPages", result)
+                self.assertEqual(list(self.folder.iterdir()), [self.pdf])
 
     def test_render_failure_reports_page_and_no_raw_exception(self):
         path = self.make_pdf("two.pdf", ["First", "Second"])
@@ -347,7 +346,7 @@ class PdfValidationTests(unittest.TestCase):
 
         with patch.object(pymupdf.Page, "get_pixmap", render):
             report = validator.inspect_pdf(
-                path, [validator.TextCheck("First", [1])], None, [],
+                path, [validator.TextCheck("First", [1])],
             )
         self.assertEqual(report.exit_code(), 1)
         self.assertEqual(report.failedPages, [2])
@@ -357,7 +356,7 @@ class PdfValidationTests(unittest.TestCase):
     def test_text_extraction_failure_does_not_claim_pdf_corruption(self):
         with patch.object(pymupdf.Page, "get_text", side_effect=RuntimeError("PRIVATE_TEXT")):
             report = validator.inspect_pdf(
-                self.pdf, [validator.TextCheck("Reference", [1])], None, [],
+                self.pdf, [validator.TextCheck("Reference", [1])],
             )
         self.assertEqual(report.exit_code(), 2)
         self.assertEqual(report.render, "PASS")
@@ -385,36 +384,11 @@ class PdfValidationTests(unittest.TestCase):
         self.assertEqual(errors.getvalue(), "")
         self.assertNotIn("PRIVATE_TEXT", output.getvalue())
 
-    def test_png_memory_failure_returns_sanitized_cli_json(self):
-        output, errors = io.StringIO(), io.StringIO()
-        with (
-            patch.object(validator, "read_options", return_value=[
-                validator.TextCheck("Reference", [1]),
-            ]),
-            patch.object(pymupdf.Pixmap, "tobytes", side_effect=MemoryError("PRIVATE_IMAGE")),
-            redirect_stdout(output),
-            redirect_stderr(errors),
-        ):
-            code = validator.main([
-                str(self.pdf), "--options-stdin",
-                "--render-dir", str(self.folder), "--render-pages", "1",
-            ])
-        self.assertEqual(code, 2)
-        result = json.loads(output.getvalue())
-        self.assertEqual(result["render"], "PASS")
-        self.assertEqual(result["contentCheck"], "FOUND")
-        self.assertIn("PAGE_EXPORT_FAILED", result["errors"])
-        self.assertEqual(result["exportedPages"], [])
-        self.assertEqual(list(self.folder.glob("*.png")), [])
-        self.assertEqual(len(output.getvalue().splitlines()), 1)
-        self.assertEqual(errors.getvalue(), "")
-        self.assertNotIn("PRIVATE_IMAGE", output.getvalue())
-
     def test_native_mupdf_error_is_sanitized(self):
         error = pymupdf.mupdf.FzErrorFormat("PRIVATE_DOCUMENT_CONTENT")
         with patch.object(pymupdf.Page, "get_pixmap", side_effect=error):
             report = validator.inspect_pdf(
-                self.pdf, [validator.TextCheck("Reference", [1])], None, [],
+                self.pdf, [validator.TextCheck("Reference", [1])],
             )
         self.assertEqual(report.exit_code(), 1)
         self.assertEqual(report.failedPages, [1])
@@ -424,22 +398,12 @@ class PdfValidationTests(unittest.TestCase):
     def test_render_memory_failure_is_incomplete_not_bad_pdf(self):
         with patch.object(pymupdf.Page, "get_pixmap", side_effect=MemoryError):
             report = validator.inspect_pdf(
-                self.pdf, [validator.TextCheck("Reference", [1])], None, [],
+                self.pdf, [validator.TextCheck("Reference", [1])],
             )
         self.assertEqual(report.exit_code(), 2)
         self.assertEqual(report.render, "INCONCLUSIVE")
         self.assertEqual(report.skippedPages, [1])
         self.assertEqual(report.failedPages, [])
-
-    def test_export_failure_is_reported_without_exposing_paths(self):
-        with patch.object(Path, "open", side_effect=PermissionError("PRIVATE_PATH")):
-            report = validator.inspect_pdf(
-                self.pdf, [validator.TextCheck("Reference", [1])], self.folder, [1],
-            )
-        self.assertEqual(report.exit_code(), 2)
-        self.assertIn("PAGE_EXPORT_FAILED", report.errors)
-        self.assertEqual(report.exportedPages, [])
-        self.assertNotIn("PRIVATE_PATH", str(report))
 
     def test_input_changes_during_inspection_are_detected(self):
         original = pymupdf.Page.get_pixmap
@@ -451,7 +415,7 @@ class PdfValidationTests(unittest.TestCase):
 
         with patch.object(pymupdf.Page, "get_pixmap", render):
             report = validator.inspect_pdf(
-                self.pdf, [validator.TextCheck("Reference", [1])], None, [],
+                self.pdf, [validator.TextCheck("Reference", [1])],
             )
         self.assertEqual(report.exit_code(), 2)
         self.assertIn("INPUT_CHANGED_DURING_CHECK", report.errors)

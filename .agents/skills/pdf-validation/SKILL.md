@@ -1,6 +1,6 @@
 ---
 name: pdf-validation
-description: Inspect an explicitly selected local PDF for parsing and page-rendering problems, require expected-text checks on specified pages, and export selected page images for private visual inspection when needed. Use when checking a downloaded or supplied PDF without exposing its contents.
+description: Validate an explicitly selected local PDF by parsing it, rendering every page in memory, and matching required expected text on specified pages. Use when checking a downloaded or supplied PDF without exposing its contents or exporting images.
 ---
 
 # PDF Validation
@@ -10,10 +10,10 @@ operate browsers, choose the newest download, download files, or determine wheth
 an application works end to end. The caller must establish the file's provenance
 and decide which document and content are expected.
 
-The script reads the source without modifying it. It makes no network requests
-and emits one JSON object containing counts, statuses, page numbers, and diagnostic
-codes, not filenames, expected strings, extracted text, or raw parser
-messages. `--help` prints usage instead of JSON.
+The script reads the source without modifying it. It makes no network requests,
+saves no images or extracted text, and emits one JSON object containing counts,
+statuses, page numbers, and diagnostic codes, not filenames, expected strings,
+extracted text, or raw parser messages. `--help` prints usage instead of JSON.
 
 ## 1. Prepare the local tool once
 
@@ -59,24 +59,27 @@ check rather than silently performing a structure-only validation.
 
 ## 3. Run parsing, rendering, and content checks
 
-The script:
+Every validation has three required stages:
 
-1. Opens the file and confirms that it is a nonempty PDF with pages.
-2. Rejects PDFs that require an opening password and detects parser repairs and
-   engine warnings.
-3. Renders **every page**, one at a time, at 72 DPI in memory. It does not require
-   extractable text, so blank pages and image-only pages can render successfully.
-4. Searches for every supplied expected literal on its explicitly selected pages.
-5. Checks whether the source size or modification time changed during inspection.
+1. **Parse:** open the file and confirm it is a nonempty PDF with pages. Reject
+   opening-password protection and report parser repairs or engine warnings.
+2. **Render in memory:** render **every page**, one at a time, at 72 DPI. Blank
+   pages and image-only pages can render successfully; extractable text is not
+   a rendering requirement. No images are exported or visually inspected.
+3. **Match expected text:** extract text locally from the specified pages and
+   search for every supplied expected literal. Return matching page numbers and
+   statuses, never document text.
+
+The script also checks whether the source size or modification time changed
+during inspection.
 
 The renderer limits a page to 16 million pixels at this resolution. An invalid or
 oversized page is listed in `skippedPages` and makes rendering `INCONCLUSIVE`,
 not `PASS`; Python-reported rendering memory exhaustion is also incomplete rather
 than proof of a bad PDF. This bounds canvas allocation, not every possible parser
 resource cost; there is no guarantee of safe execution for arbitrary hostile files.
-Python-reported memory exhaustion during text extraction makes that content
-check unavailable; during PNG encoding/export it reports `PAGE_EXPORT_FAILED`.
-These failures are reported in sanitized JSON rather than a raw traceback.
+Python-reported memory exhaustion during text extraction makes that page's text
+unavailable and is reported in sanitized JSON rather than a raw traceback.
 
 Supply sensitive values through UTF-8 JSON on stdin with `--options-stdin`, not
 command-line options. Both this flag and a nonempty `checks` array are required;
@@ -109,18 +112,21 @@ a UTF-8 BOM as well.
 
 `FOUND` means only that the literal appeared on a requested page. It is **not**
 semantic proof of document identity: an identifier can appear in unrelated body
-text. Choose pages deliberately, then inspect the relevant heading or field
-visually when its meaning matters. `NOT_FOUND` does not prove corruption or a
-wrong document; formatting, fonts, or extraction may require manual inspection.
-No OCR or external analysis service is used. For image-only pages or extraction
-failures, the content result stays `INCONCLUSIVE` and the exit code is `2`, even
-when rendering succeeds. Inspect those pages locally and report manual findings
-separately; do not remove the required checks to get a successful exit code.
+text. Choose pages deliberately and combine identifying fields with the expected
+document period or other distinguishing content. Avoid a single generic name or
+short identifier as the only evidence when more context is required.
+
+If a required check is `NOT_FOUND` or `INCONCLUSIVE`, content has not been
+confirmed and the exit code is `2`, even when parsing and rendering pass. Missing
+text does not prove PDF corruption: image-only pages, formatting, fonts, or
+extraction failures can prevent a match. No OCR, image review, or external
+analysis service is used as a fallback. Report the unconfirmed check; do not
+remove or weaken expectations just to get a successful exit code.
 
 ### Password-protected documents fail validation
 
 A PDF that requires an opening password is a **FAIL**, with `PASSWORD_PROTECTED`
-and exit code `1`. Rendering, text checks, and exports are not run. Do not ask for
+and exit code `1`. Rendering and text checks are not run. Do not ask for
 a password or attempt to unlock it: the tool has no password input or authentication
 path, and a `password` key in stdin JSON is rejected as `INVALID_OPTIONS`.
 
@@ -128,36 +134,7 @@ This is a validation-policy failure, not a claim that the PDF is corrupt. An
 encrypted PDF that opens without a password, such as one with only owner permission
 restrictions, still undergoes the normal rendering and required content checks.
 
-## 4. Inspect exported pages when automated evidence needs review
-
-To inspect layout, suspicious rendering, or image-only content, provide an
-existing private output directory and a nonempty list of page numbers:
-
-```powershell
-$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-@'
-{"checks": [{"text": "Reference ABC-123", "pages": [1]}]}
-'@ | & .\.venv\Scripts\python.exe -X utf8 .\validate_pdf.py 'C:\private\document.pdf' --options-stdin --render-dir 'C:\private\inspection' --render-pages 1 3
-```
-
-The required content checks still run when exporting pages. All pages are
-rendered in memory; only the selected pages are saved as
-`page-0001.png`, `page-0003.png`, and so on. Existing output files are never
-overwritten. Use a fresh directory or explicitly remove only your previous
-temporary outputs before retrying. On export failure, inspect the output
-directory for incomplete newly created images; do not treat them as successful
-exports.
-
-Open those exact images with a local image viewer. Look for missing content,
-garbled glyphs, clipped text, and the expected document fields. A successful
-render is not proof that a page looks correct. Inspect a blank or image-only page
-in context instead of declaring it invalid merely because text extraction is empty.
-
-Keep all source documents, page images, and sensitive options outside repositories
-and shared reports. After inspection, remove only the temporary images/options
-you created; leave the original PDF and reusable tool environment intact.
-
-## 5. Interpret the result
+## 4. Interpret the result
 
 Example of successful parsing, rendering, and the two required checks above:
 
@@ -175,7 +152,6 @@ Example of successful parsing, rendering, and the two required checks above:
     {"index": 1, "pages": [1], "result": "FOUND", "matchedPages": [1]},
     {"index": 2, "pages": [1], "result": "FOUND", "matchedPages": [1]}
   ],
-  "exportedPages": [],
   "errors": []
 }
 ```
@@ -183,9 +159,11 @@ Example of successful parsing, rendering, and the two required checks above:
 - **Parsing:** `PASS`, `FAIL` (including opening-password protection),
   `INCONCLUSIVE` (repair or engine warnings), or `NOT_RUN` (input/tooling problem).
   A repaired document is never reported as a clean parse success.
-- **Rendering:** `PASS` only after every page renders; `FAIL` includes the
-  one-based `failedPages`; `INCONCLUSIVE` includes `skippedPages`.
-  `NOT_RUN` means rendering could not begin.
+- **Rendering:** `PASS` only after every page produces a bitmap with nonzero
+  dimensions. This is technical renderability, not a judgment of layout, clipping,
+  glyph appearance, or visual completeness. `FAIL` includes the one-based
+  `failedPages`; `INCONCLUSIVE` includes `skippedPages`. `NOT_RUN` means rendering
+  could not begin.
 - **Content:** `NOT_RUN`, `FOUND`, `NOT_FOUND`, or `INCONCLUSIVE`. `NOT_RUN`
   means required input is missing or another prerequisite prevented the checks;
   it never permits a successful exit. Each completed check's
@@ -195,7 +173,7 @@ Example of successful parsing, rendering, and the two required checks above:
   content checks to be `FOUND`.
 - **Diagnostics:** `warnings` and `errors` contain fixed codes only. Examples:
   `PDF_REPAIRED`, `PDF_ENGINE_WARNINGS`, `FILE_NOT_FOUND`, `DEPENDENCY_MISSING`,
-  `CHECKS_REQUIRED`, `PASSWORD_PROTECTED`, `PAGE_OUT_OF_RANGE`, `PAGE_EXPORT_FAILED`, and
+  `CHECKS_REQUIRED`, `PASSWORD_PROTECTED`, `PAGE_OUT_OF_RANGE`, and
   `INPUT_CHANGED_DURING_CHECK`. A tooling error must not become an empty,
   success-shaped result.
 
@@ -203,15 +181,19 @@ Exit codes:
 
 | Code | Meaning |
 | ---- | ------- |
-| `0` | Parsing and rendering passed, every required expected-text check was found, and requested exports completed; still not semantic or end-to-end acceptance. |
+| `0` | Parsing and in-memory rendering passed and every required expected-text check was found; still not visual, semantic, or end-to-end acceptance. |
 | `1` | Opening-password protection, a file-open/format failure, or a page-rendering failure was observed. |
-| `2` | Input/tooling/export problem, parser warning/repair, skipped work, or unconfirmed text. Inspect the JSON for the reason. |
+| `2` | Input/tooling problem, parser warning/repair, skipped work, or unconfirmed text. Inspect the JSON for the reason. |
 
 When both a file validation failure and an incomplete check exist, exit code `1`
 takes precedence; the separate fields retain both outcomes. Inspect the exit
-status **and** JSON. Report only sanitized evidence and outstanding manual checks,
+status **and** JSON. Report only sanitized evidence and any unconfirmed checks,
 not the private path or content. Do not infer download provenance, freshness,
-business correctness, or application E2E success from this result.
+business correctness, visual correctness, or application E2E success from this result.
+
+Keep source documents and sensitive options outside repositories and shared reports.
+If you created a private temporary options file, remove only that file when finished;
+leave the original PDF and reusable tool environment intact.
 
 ## Maintaining the tool
 
@@ -224,5 +206,6 @@ documents or credentials are needed:
 
 Keep dependency changes explicit and rerun these tests after changing the script
 or pin. Preserve tests for required content checks, Unicode paths, blank/image-only
-pages, malformed and repaired PDFs, encrypted files, scoped text, page/export
-failures, and sanitized errors. Never replace these fixtures with private documents.
+pages, malformed and repaired PDFs, encrypted files, scoped text, render/extraction
+failures, and sanitized errors. Verify that inspection writes no image or text
+files. Never replace these fixtures with private documents.

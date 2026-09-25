@@ -47,7 +47,6 @@ class Report:
     warnings: list[str] = field(default_factory=list)
     contentCheck: str = "NOT_RUN"
     checks: list[CheckResult] = field(default_factory=list)
-    exportedPages: list[int] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
     def exit_code(self) -> int:
@@ -133,8 +132,6 @@ def check_text(
 def inspect_pdf(
     path: Path,
     checks: list[TextCheck],
-    render_dir: Path | None,
-    export_pages: list[int],
 ) -> Report:
     report = Report()
     if not checks:
@@ -208,23 +205,10 @@ def inspect_pdf(
         if document.is_repaired:
             report.warnings.append("PDF_REPAIRED")
 
-        selected_pages = export_pages + [
-            number for check in checks for number in check.pages
-        ]
+        selected_pages = [number for check in checks for number in check.pages]
         if any(number > report.pages for number in selected_pages):
             report.errors.append("PAGE_OUT_OF_RANGE")
             return report
-        if render_dir is not None:
-            if not render_dir.is_dir():
-                report.errors.append("EXPORT_DIRECTORY_UNAVAILABLE")
-                return report
-            if any(
-                (render_dir / f"page-{number:04}.png").exists()
-                or (render_dir / f"page-{number:04}.png").is_symlink()
-                for number in export_pages
-            ):
-                report.errors.append("EXPORT_EXISTS")
-                return report
 
         report.render = "PASS"
         texts: dict[int, str | None] = {}
@@ -258,14 +242,6 @@ def inspect_pdf(
                 except (MemoryError, *pdf_errors):
                     texts[number] = None
                     report.warnings.append("TEXT_EXTRACTION_FAILED")
-            if render_dir is not None and number in export_pages:
-                try:
-                    image = pixmap.tobytes("png")
-                    with (render_dir / f"page-{number:04}.png").open("xb") as output:
-                        output.write(image)
-                    report.exportedPages.append(number)
-                except (OSError, MemoryError, *pdf_errors):
-                    report.errors.append("PAGE_EXPORT_FAILED")
 
         if report.failedPages:
             report.render = "FAIL"
@@ -294,17 +270,12 @@ def main(argv: list[str] | None = None) -> int:
         "--options-stdin", action="store_true",
         help="Required: read UTF-8 JSON with nonempty page-scoped expected-text checks",
     )
-    parser.add_argument("--render-dir", type=Path, help="Existing private PNG output directory")
-    parser.add_argument("--render-pages", type=int, nargs="+", help="One-based pages to export")
     try:
         args = parser.parse_args(argv)
         if not args.options_stdin:
             raise InputError("CHECKS_REQUIRED")
         checks = read_options()
-        if (args.render_dir is None) != (args.render_pages is None):
-            raise InputError("EXPORT_OPTIONS_MUST_BE_PAIRED")
-        pages = page_numbers(args.render_pages) if args.render_pages is not None else []
-        report = inspect_pdf(args.path, checks, args.render_dir, pages)
+        report = inspect_pdf(args.path, checks)
     except InputError as error:
         report = Report(errors=[str(error)])
     print(json.dumps(asdict(report), ensure_ascii=True))

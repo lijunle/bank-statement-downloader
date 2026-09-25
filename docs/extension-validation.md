@@ -107,24 +107,24 @@ a successful PDF-download end-to-end (E2E) result.
    the browser's download entry, timing, and local file. Avoid concurrent downloads
    that make attribution ambiguous; if attribution cannot be established, the
    download check is incomplete. Do not inspect an arbitrary latest or older PDF.
-3. Inspect that exact completed file locally. Record its byte count, then open it
-   with a local PDF viewer or renderer and check that its pages render/read
-   correctly, rather than containing an HTML login page, JSON error, or truncated
-   document. Parser checks can supplement rendering; a text-extraction failure
-   or lack of extracted text alone does not prove corruption. Blank or image-only
-   pages are not automatically invalid; inspect them in context with a local
-   viewer or renderer.
-   The standalone [PDF validation skill](../.agents/skills/pdf-validation/SKILL.md)
-   provides a local parser/renderer with required page-scoped expected-text checks.
-   Pass the exact file correlated with the download and meaningful expectations
-   for the selected account/group and period from the bank UI or established
-   mapping. Its file-level result does not establish extension E2E success or
-   replace the account/period check. If content cannot be confirmed automatically,
-   inspect it locally rather than omitting the required checks.
-4. Privately verify that the document corresponds to the selected account or
-   documented consolidated group and statement period. Check the document itself,
-   not just its filename. Report only whether these checks matched, not account
-   details or statement contents.
+3. Inspect that exact completed file with the standalone
+   [PDF validation skill](../.agents/skills/pdf-validation/SKILL.md). Record its
+   byte count and run all three stages: PDF parsing, rendering every page in
+   memory, and required page-scoped matching against locally extracted text.
+   No image export or visual inspection is required. Rendering success establishes
+   technical renderability, not that layout, glyphs, or page clipping look correct.
+4. Supply expected account/group identifiers or displayed masks, account/product
+   names, and the selected statement period from the bank UI or established
+   mapping. Use the distinguishing fields appropriate to the flow and pages where
+   that information is expected. For consolidated statements, use the documented
+   group mapping. Do not derive expected values from the candidate PDF, check only
+   its filename, or rely on an isolated short mask or generic product name.
+   All required fields must be found; report only match results and page numbers,
+   not account details or extracted text. A missing match or unavailable text is
+   unconfirmed content, not automatically corruption. Image-only pages may render
+   successfully but cannot establish a content match without extractable text.
+   Report an incomplete check rather than weakening the expectations or switching
+   to an image-review fallback.
 
 The popup's **Downloaded** status means it triggered a download, not that the
 browser finished saving a valid statement. A success message, HTTP 200, `.pdf`
@@ -133,7 +133,7 @@ No fixed file-size threshold establishes readability or correctness.
 
 A quick check does not require a full network capture, another download through
 the bank's UI, or byte-for-byte identity with a bank-UI download. Use targeted
-comparison only when needed to resolve a discrepancy. Keep PDFs, rendered pages,
+comparison only when needed to resolve a discrepancy. Keep PDFs, expected values,
 raw diagnostics, and personal filenames private and outside the repository;
 do not upload them to external inspection services.
 
@@ -144,8 +144,9 @@ Assign outcomes to the checks actually attempted and state the overall scope:
 - **PASS:** all checks required by the stated scope have evidence of correct
   behavior. A **PDF-download E2E PASS** requires the real toolbar flow, refreshed
   account mapping, statement listing, the new completed download attributable to
-  the selected row, local readability/rendering, and account/group and period
-  correspondence. It covers only the exercised flow.
+  the selected row, local parsing/in-memory rendering, and required text matches
+  consistent with the selected account/group and period. It covers only the
+  exercised flow, not visual layout or completeness.
 - **FAIL:** observed extension behavior contradicts the scoped expectation, such
   as wrong account mapping, missing available statements, an extension download
   failure, or an unreadable or mismatched downloaded document. State the failed
@@ -173,9 +174,10 @@ Scope: <bank>; <supported account type/flow>; account A; statement A
 Checks: authenticated page <result>; real toolbar + refresh <result>;
         account mapping <result>; statement dates/order/availability <result>
 Download evidence: <new completed download correlated with the popup click, or gap>;
-                   bytes=<count or not obtained>; local viewer/renderer=<tool>;
-                   rendering/readability=<result>; account/group match=<result>;
-                   period match=<result>
+                   bytes=<count or not obtained>; local parser/renderer=<tool>;
+                   parsing=<result>; in-memory rendering=<result>;
+                   required text matches=<results and page numbers>;
+                   account/group match=<result>; period match=<result>
 Result: <PASS (PDF-download E2E) | PASS (UI only) | FAIL | BLOCKED>; <reason>
 Untested: <operations and limitations>
 Inapplicable: <operations and reasons>
