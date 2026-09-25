@@ -65,7 +65,8 @@ Every validation has three required stages:
    opening-password protection and report parser repairs or engine warnings.
 2. **Render in memory:** render **every page**, one at a time, at 72 DPI. Blank
    pages and image-only pages can render successfully; extractable text is not
-   a rendering requirement. No images are exported or visually inspected.
+   a rendering requirement. Release each bitmap before text extraction or the
+   next page's allocation. No images are exported or visually inspected.
 3. **Match expected text:** extract text locally from the specified pages and
    search for every supplied expected literal. Return matching page numbers and
    statuses, never document text.
@@ -78,14 +79,20 @@ oversized page is listed in `skippedPages` and makes rendering `INCONCLUSIVE`,
 not `PASS`; Python-reported rendering memory exhaustion is also incomplete rather
 than proof of a bad PDF. This bounds canvas allocation, not every possible parser
 resource cost; there is no guarantee of safe execution for arbitrary hostile files.
-Python-reported memory exhaustion during text extraction makes that page's text
-unavailable and is reported in sanitized JSON rather than a raw traceback.
+Normalize each selected page's extracted whitespace once, within the text-extraction
+error boundary. Python-reported memory exhaustion during extraction/normalization
+makes that page's text unavailable. Memory exhaustion during subsequent matching
+returns `CONTENT_CHECK_RESOURCE_LIMIT` with inconclusive content while retaining
+the completed parsing/rendering results.
 
 Supply sensitive values through UTF-8 JSON on stdin with `--options-stdin`, not
 command-line options. Both this flag and a nonempty `checks` array are required;
 omitting either returns `CHECKS_REQUIRED` with exit code `2`, before opening the
 file. There are no built-in account, date, financial-institution, or
-document-layout rules.
+document-layout rules. Invalid JSON, including integer-conversion or nesting-limit
+failures, returns `INVALID_OPTIONS_JSON`. Unreadable stdin and Python-reported
+input memory exhaustion return `OPTIONS_UNREADABLE` and `OPTIONS_RESOURCE_LIMIT`.
+These are input/tooling errors (exit `2`), not evidence of an invalid PDF.
 
 Each check requires a nonempty `text` and explicit one-based `pages`. The script
 does a case-sensitive literal substring search after collapsing whitespace in
@@ -207,5 +214,6 @@ documents or credentials are needed:
 Keep dependency changes explicit and rerun these tests after changing the script
 or pin. Preserve tests for required content checks, Unicode paths, blank/image-only
 pages, malformed and repaired PDFs, encrypted files, scoped text, render/extraction
-failures, and sanitized errors. Verify that inspection writes no image or text
-files. Never replace these fixtures with private documents.
+and matching failures, invalid input limits, and sanitized errors. Verify that
+inspection writes no image or text files and releases each bitmap before allocating
+the next. Never replace these fixtures with private documents.

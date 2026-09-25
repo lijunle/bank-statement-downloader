@@ -76,8 +76,12 @@ def page_numbers(value: object) -> list[int]:
 def read_options() -> list[TextCheck]:
     try:
         options = json.loads(sys.stdin.buffer.read().decode("utf-8-sig"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (ValueError, RecursionError):
         raise InputError("INVALID_OPTIONS_JSON") from None
+    except OSError:
+        raise InputError("OPTIONS_UNREADABLE") from None
+    except MemoryError:
+        raise InputError("OPTIONS_RESOURCE_LIMIT") from None
     if not isinstance(options, dict) or options.keys() - {"checks"}:
         raise InputError("INVALID_OPTIONS")
     if "checks" not in options:
@@ -107,12 +111,12 @@ def check_text(
         matched = [
             number for number in check.pages
             if texts.get(number) is not None
-            and expected in " ".join(texts[number].split())
+            and expected in texts[number]
         ]
         if matched:
             status = "FOUND"
         elif any(
-            texts.get(number) is None or not texts[number].strip()
+            texts.get(number) is None or not texts[number]
             for number in check.pages
         ):
             status = "INCONCLUSIVE"
@@ -226,8 +230,11 @@ def inspect_pdf(
                     report.warnings.append("PAGE_RENDER_LIMIT")
                     continue
                 pixmap = page.get_pixmap(dpi=72, alpha=False)
-                if pixmap.width == 0 or pixmap.height == 0:
-                    raise ValueError("Empty rendering")
+                try:
+                    if pixmap.width == 0 or pixmap.height == 0:
+                        raise ValueError("Empty rendering")
+                finally:
+                    del pixmap
             except MemoryError:
                 report.skippedPages.append(number)
                 report.warnings.append("PAGE_RENDER_RESOURCE_LIMIT")
@@ -238,7 +245,7 @@ def inspect_pdf(
 
             if number in text_pages:
                 try:
-                    texts[number] = page.get_text()
+                    texts[number] = " ".join(page.get_text().split())
                 except (MemoryError, *pdf_errors):
                     texts[number] = None
                     report.warnings.append("TEXT_EXTRACTION_FAILED")
@@ -248,7 +255,11 @@ def inspect_pdf(
             report.errors.append("PAGE_RENDER_FAILED")
         elif report.skippedPages:
             report.render = "INCONCLUSIVE"
-        report.contentCheck, report.checks = check_text(checks, texts)
+        try:
+            report.contentCheck, report.checks = check_text(checks, texts)
+        except MemoryError:
+            report.contentCheck = "INCONCLUSIVE"
+            report.errors.append("CONTENT_CHECK_RESOURCE_LIMIT")
         if pymupdf.TOOLS.mupdf_warnings(reset=True):
             report.warnings.append("PDF_ENGINE_WARNINGS")
             if report.parse == "PASS":

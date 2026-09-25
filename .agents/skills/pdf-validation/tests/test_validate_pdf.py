@@ -3,12 +3,14 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+import weakref
 
 import pymupdf
 
@@ -93,6 +95,73 @@ class PdfValidationTests(unittest.TestCase):
         self.assertEqual(report.render, "PASS")
         self.assertEqual(report.contentCheck, "FOUND")
         self.assertEqual(set(self.folder.iterdir()), {self.pdf, path})
+
+    def test_bitmaps_are_released_before_extraction_and_the_next_page(self):
+        path = self.make_pdf("three.pdf", ["Reference ABC-123", "", "Last page"])
+        bitmap_refs = []
+        original_render = pymupdf.Page.get_pixmap
+        original_text = pymupdf.Page.get_text
+
+        def render(page, **kwargs):
+            self.assertFalse(any(ref() is not None for ref in bitmap_refs))
+            bitmap = original_render(page, **kwargs)
+            bitmap_refs.append(weakref.ref(bitmap))
+            return bitmap
+
+        def extract(page, *args, **kwargs):
+            self.assertFalse(any(ref() is not None for ref in bitmap_refs))
+            return original_text(page, *args, **kwargs)
+
+        with (
+            patch.object(pymupdf.Page, "get_pixmap", render),
+            patch.object(pymupdf.Page, "get_text", extract),
+        ):
+            report = validator.inspect_pdf(path, [validator.TextCheck("Reference", [1])])
+        self.assertEqual(report.exit_code(), 0)
+        self.assertEqual(len(bitmap_refs), 3)
+        self.assertFalse(any(ref() is not None for ref in bitmap_refs))
+
+    def test_each_selected_pages_text_is_normalized_only_once(self):
+        normalizations = []
+
+        class CountedText(str):
+            def split(self, *args, **kwargs):
+                normalizations.append(True)
+                return super().split(*args, **kwargs)
+
+        with patch.object(pymupdf.Page, "get_text", return_value=CountedText(
+            "Reference ABC-123\nPeriod 2026-08"
+        )):
+            report = validator.inspect_pdf(self.pdf, [
+                validator.TextCheck("Reference", [1]),
+                validator.TextCheck("ABC-123", [1]),
+                validator.TextCheck("Period 2026-08", [1]),
+            ])
+        self.assertEqual(report.exit_code(), 0)
+        self.assertEqual(len(normalizations), 1)
+
+    def test_invalid_bitmap_is_released_before_rendering_continues(self):
+        path = self.make_pdf("two.pdf", ["First", "Reference ABC-123"])
+        bitmap_refs = []
+        original_render = pymupdf.Page.get_pixmap
+
+        class EmptyBitmap:
+            width = 0
+            height = 100
+
+        def render(page, **kwargs):
+            self.assertFalse(any(ref() is not None for ref in bitmap_refs))
+            bitmap = EmptyBitmap() if page.number == 0 else original_render(page, **kwargs)
+            bitmap_refs.append(weakref.ref(bitmap))
+            return bitmap
+
+        with patch.object(pymupdf.Page, "get_pixmap", render):
+            report = validator.inspect_pdf(path, [validator.TextCheck("Reference", [2])])
+        self.assertEqual(report.exit_code(), 1)
+        self.assertEqual(report.failedPages, [1])
+        self.assertEqual(report.contentCheck, "FOUND")
+        self.assertEqual(len(bitmap_refs), 2)
+        self.assertFalse(any(ref() is not None for ref in bitmap_refs))
 
     def test_unicode_paths_and_spaces(self):
         path = self.make_pdf("synthetic \u62a5\u544a \u00ae.pdf", ["Private sample"])
@@ -300,6 +369,48 @@ class PdfValidationTests(unittest.TestCase):
         self.assertEqual(process.stderr, "")
         self.assertNotIn("PRIVATE_VALUE", process.stdout)
 
+    def test_json_integer_and_nesting_limits_return_input_errors(self):
+        sources = [
+            '{"checks":[{"text":"PRIVATE_VALUE","pages":[' + "9" * 5000 + "]}]}",
+            "[" * 20000 + "0" + "]" * 20000,
+        ]
+        for source in sources:
+            with self.subTest(nested=source.startswith("[")):
+                process = subprocess.run(
+                    [sys.executable, str(SCRIPT), str(self.pdf), "--options-stdin"],
+                    input=source, text=True, encoding="utf-8",
+                    env={**os.environ, "PYTHONINTMAXSTRDIGITS": "4300"},
+                    capture_output=True, timeout=30,
+                )
+                self.assertEqual(process.returncode, 2)
+                self.assertEqual(process.stderr, "")
+                self.assertEqual(len(process.stdout.splitlines()), 1)
+                result = json.loads(process.stdout)
+                self.assertEqual(result["errors"], ["INVALID_OPTIONS_JSON"])
+                self.assertEqual(result["parse"], "NOT_RUN")
+                self.assertNotIn("PRIVATE_VALUE", process.stdout)
+
+    def test_stdin_read_failures_are_sanitized_input_errors(self):
+        for error, code in [
+            (OSError("PRIVATE_INPUT_SOURCE"), "OPTIONS_UNREADABLE"),
+            (MemoryError("PRIVATE_INPUT_SOURCE"), "OPTIONS_RESOURCE_LIMIT"),
+        ]:
+            with self.subTest(code=code):
+                output, errors = io.StringIO(), io.StringIO()
+                with (
+                    patch.object(sys, "stdin") as stdin,
+                    redirect_stdout(output),
+                    redirect_stderr(errors),
+                ):
+                    stdin.buffer.read.side_effect = error
+                    exit_code = validator.main([str(self.pdf), "--options-stdin"])
+                self.assertEqual(exit_code, 2)
+                result = json.loads(output.getvalue())
+                self.assertEqual(result["errors"], [code])
+                self.assertEqual(result["parse"], "NOT_RUN")
+                self.assertEqual(errors.getvalue(), "")
+                self.assertNotIn("PRIVATE_INPUT_SOURCE", output.getvalue())
+
     def test_unicode_text_options_accept_utf8_bom(self):
         path = self.make_pdf("unicode-text.pdf", ["Caf\u00e9 reference"])
         process = subprocess.run(
@@ -383,6 +494,53 @@ class PdfValidationTests(unittest.TestCase):
         self.assertEqual(len(output.getvalue().splitlines()), 1)
         self.assertEqual(errors.getvalue(), "")
         self.assertNotIn("PRIVATE_TEXT", output.getvalue())
+
+    def test_text_normalization_memory_failure_returns_inconclusive_json(self):
+        class ExhaustedText(str):
+            def split(self, *args, **kwargs):
+                raise MemoryError("PRIVATE_EXTRACTED_TEXT")
+
+        output, errors = io.StringIO(), io.StringIO()
+        with (
+            patch.object(validator, "read_options", return_value=[
+                validator.TextCheck("Reference", [1]),
+            ]),
+            patch.object(pymupdf.Page, "get_text", return_value=ExhaustedText("Reference")),
+            redirect_stdout(output),
+            redirect_stderr(errors),
+        ):
+            code = validator.main([str(self.pdf), "--options-stdin"])
+        self.assertEqual(code, 2)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["parse"], "PASS")
+        self.assertEqual(result["render"], "PASS")
+        self.assertEqual(result["contentCheck"], "INCONCLUSIVE")
+        self.assertIn("TEXT_EXTRACTION_FAILED", result["warnings"])
+        self.assertEqual(errors.getvalue(), "")
+        self.assertNotIn("PRIVATE_EXTRACTED_TEXT", output.getvalue())
+
+    def test_matching_memory_failure_preserves_completed_checks(self):
+        class ExhaustedExpectedText(str):
+            def split(self, *args, **kwargs):
+                raise MemoryError("PRIVATE_EXPECTED_TEXT")
+
+        output, errors = io.StringIO(), io.StringIO()
+        with (
+            patch.object(validator, "read_options", return_value=[
+                validator.TextCheck(ExhaustedExpectedText("Reference"), [1]),
+            ]),
+            redirect_stdout(output),
+            redirect_stderr(errors),
+        ):
+            code = validator.main([str(self.pdf), "--options-stdin"])
+        self.assertEqual(code, 2)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["parse"], "PASS")
+        self.assertEqual(result["render"], "PASS")
+        self.assertEqual(result["contentCheck"], "INCONCLUSIVE")
+        self.assertIn("CONTENT_CHECK_RESOURCE_LIMIT", result["errors"])
+        self.assertEqual(errors.getvalue(), "")
+        self.assertNotIn("PRIVATE_EXPECTED_TEXT", output.getvalue())
 
     def test_native_mupdf_error_is_sanitized(self):
         error = pymupdf.mupdf.FzErrorFormat("PRIVATE_DOCUMENT_CONTENT")
