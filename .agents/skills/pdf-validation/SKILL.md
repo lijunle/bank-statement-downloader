@@ -90,7 +90,7 @@ synthetic text:
 ```
 
 Both named arguments are required. An empty string is rejected.
-For a literal beginning with `--`, use `--text=VALUE` to avoid option parsing.
+For any literal beginning with `-`, use `--text=VALUE` to avoid option parsing.
 Search text is used exactly as supplied, and extracted page text is not rewritten.
 Repeated spaces, line breaks, and tabs are literal characters. Matching is
 case-sensitive and stays within each page: no trimming, whitespace normalization,

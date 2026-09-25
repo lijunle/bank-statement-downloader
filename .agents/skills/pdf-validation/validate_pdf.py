@@ -287,7 +287,7 @@ Example (PowerShell, synthetic text only, using this skill's Python interpreter)
   python validate_pdf.py match --file 'C:\\private\\document.pdf' --text 'Reference ABC-123'
 --text values may be visible in process arguments, shell history, or tool logs.
 Treat invocations containing private values as sensitive; do not publish or commit them.
-For a literal starting with '--', use --text=VALUE to avoid option parsing.
+For any literal starting with '-', use --text=VALUE to avoid option parsing.
 """,
 }
 

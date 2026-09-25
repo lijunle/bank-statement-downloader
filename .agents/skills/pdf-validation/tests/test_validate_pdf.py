@@ -212,14 +212,16 @@ class PdfCapabilityTests(unittest.TestCase):
                 self.assertNotIn(str(self.pdf), output.getvalue())
 
     def test_option_like_search_text_is_supported_with_equals(self):
-        path = self.make_pdf("option-like.pdf", ["--reference"])
-        process = subprocess.run(
-            [sys.executable, str(SCRIPT), "match", "--file", str(path), "--text=--reference"],
-            capture_output=True, timeout=30,
-        )
-        self.assertEqual(process.returncode, 0)
-        self.assertEqual(process.stderr, b"")
-        self.assertEqual(json.loads(process.stdout)["result"], "FOUND")
+        path = self.make_pdf("option-like.pdf", ["--reference\n-reference"])
+        for text in ["--reference", "-reference"]:
+            with self.subTest(text=text):
+                process = subprocess.run(
+                    [sys.executable, str(SCRIPT), "match", "--file", str(path), f"--text={text}"],
+                    capture_output=True, timeout=30,
+                )
+                self.assertEqual(process.returncode, 0)
+                self.assertEqual(process.stderr, b"")
+                self.assertEqual(json.loads(process.stdout)["result"], "FOUND")
 
     def test_match_is_case_sensitive_and_preserves_whitespace(self):
         for text, expected in [
