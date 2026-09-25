@@ -1,4 +1,4 @@
-"""Read-only PDF inspection with sanitized, machine-readable evidence."""
+"""Independent, read-only PDF capabilities with sanitized evidence."""
 
 from __future__ import annotations
 
@@ -38,8 +38,10 @@ class CheckResult:
 
 @dataclass
 class Report:
+    operation: str | None = None
     bytes: int | None = None
     pages: int | None = None
+    passwordProtected: bool | None = None
     parse: str = "NOT_RUN"
     render: str = "NOT_RUN"
     failedPages: list[int] = field(default_factory=list)
@@ -52,14 +54,15 @@ class Report:
     def exit_code(self) -> int:
         if self.parse == "FAIL" or self.render == "FAIL":
             return 1
-        if (
-            self.errors
-            or self.parse != "PASS"
-            or self.render != "PASS"
-            or self.contentCheck != "FOUND"
-        ):
+        if self.errors or self.parse != "PASS":
             return 2
-        return 0
+        if self.operation == "inspect":
+            return 0
+        if self.operation == "render" and self.render == "PASS":
+            return 0
+        if self.operation == "match" and self.contentCheck in ("FOUND", "NOT_FOUND"):
+            return 0
+        return 2
 
 
 def page_numbers(value: object) -> list[int]:
@@ -133,12 +136,20 @@ def check_text(
     )
 
 
-def inspect_pdf(
+def run_operation(
     path: Path,
-    checks: list[TextCheck],
+    operation: str,
+    checks: list[TextCheck] | None = None,
 ) -> Report:
-    report = Report()
-    if not checks:
+    report = Report(operation=operation)
+    if operation not in ("inspect", "render", "match"):
+        report.operation = None
+        report.errors.append("INVALID_OPERATION")
+        return report
+    if operation != "match" and checks is not None:
+        report.errors.append("CHECKS_NOT_APPLICABLE")
+        return report
+    if operation == "match" and not checks:
         report.errors.append("CHECKS_REQUIRED")
         return report
     try:
@@ -192,14 +203,10 @@ def inspect_pdf(
             return report
         try:
             report.pages = document.page_count
-            needs_password = document.needs_pass
+            report.passwordProtected = bool(document.needs_pass)
         except pdf_errors:
             report.parse = "FAIL"
             report.errors.append("PDF_METADATA_FAILED")
-            return report
-        if needs_password:
-            report.parse = "FAIL"
-            report.errors.append("PASSWORD_PROTECTED")
             return report
         if report.pages == 0:
             report.parse = "FAIL"
@@ -209,57 +216,59 @@ def inspect_pdf(
         if document.is_repaired:
             report.warnings.append("PDF_REPAIRED")
 
-        selected_pages = [number for check in checks for number in check.pages]
-        if any(number > report.pages for number in selected_pages):
-            report.errors.append("PAGE_OUT_OF_RANGE")
+        if report.passwordProtected and operation != "inspect":
+            report.errors.append("PASSWORD_PROTECTED")
             return report
 
-        report.render = "PASS"
-        texts: dict[int, str | None] = {}
-        text_pages = {number for check in checks for number in check.pages}
-        for number in range(1, report.pages + 1):
-            try:
-                page = document.load_page(number - 1)
-                width, height = page.rect.width, page.rect.height
-                if (
-                    not math.isfinite(width) or not math.isfinite(height)
-                    or width <= 0 or height <= 0
-                    or math.ceil(width) * math.ceil(height) > MAX_PAGE_PIXELS
-                ):
+        if operation == "render":
+            report.render = "PASS"
+            for number in range(1, report.pages + 1):
+                try:
+                    page = document.load_page(number - 1)
+                    width, height = page.rect.width, page.rect.height
+                    if (
+                        not math.isfinite(width) or not math.isfinite(height)
+                        or width <= 0 or height <= 0
+                        or math.ceil(width) * math.ceil(height) > MAX_PAGE_PIXELS
+                    ):
+                        report.skippedPages.append(number)
+                        report.warnings.append("PAGE_RENDER_LIMIT")
+                        continue
+                    pixmap = page.get_pixmap(dpi=72, alpha=False)
+                    try:
+                        if pixmap.width == 0 or pixmap.height == 0:
+                            raise ValueError("Empty rendering")
+                    finally:
+                        del pixmap
+                except MemoryError:
                     report.skippedPages.append(number)
-                    report.warnings.append("PAGE_RENDER_LIMIT")
-                    continue
-                pixmap = page.get_pixmap(dpi=72, alpha=False)
-                try:
-                    if pixmap.width == 0 or pixmap.height == 0:
-                        raise ValueError("Empty rendering")
-                finally:
-                    del pixmap
-            except MemoryError:
-                report.skippedPages.append(number)
-                report.warnings.append("PAGE_RENDER_RESOURCE_LIMIT")
-                continue
-            except pdf_errors:
-                report.failedPages.append(number)
-                continue
+                    report.warnings.append("PAGE_RENDER_RESOURCE_LIMIT")
+                except pdf_errors:
+                    report.failedPages.append(number)
+            if report.failedPages:
+                report.render = "FAIL"
+                report.errors.append("PAGE_RENDER_FAILED")
+            elif report.skippedPages:
+                report.render = "INCONCLUSIVE"
 
-            if number in text_pages:
+        if operation == "match":
+            text_pages = {number for check in checks for number in check.pages}
+            if any(number > report.pages for number in text_pages):
+                report.errors.append("PAGE_OUT_OF_RANGE")
+                return report
+            texts: dict[int, str | None] = {}
+            for number in sorted(text_pages):
                 try:
+                    page = document.load_page(number - 1)
                     texts[number] = " ".join(page.get_text().split())
                 except (MemoryError, *pdf_errors):
                     texts[number] = None
                     report.warnings.append("TEXT_EXTRACTION_FAILED")
-
-        if report.failedPages:
-            report.render = "FAIL"
-            report.errors.append("PAGE_RENDER_FAILED")
-        elif report.skippedPages:
-            report.render = "INCONCLUSIVE"
-        try:
-            report.contentCheck, report.checks = check_text(checks, texts)
-        except MemoryError:
-            report.contentCheck = "INCONCLUSIVE"
-            report.errors.append("CONTENT_CHECK_RESOURCE_LIMIT")
+            try:
+                report.contentCheck, report.checks = check_text(checks, texts)
+            except MemoryError:
+                report.contentCheck = "INCONCLUSIVE"
+                report.errors.append("CONTENT_CHECK_RESOURCE_LIMIT")
         if pymupdf.TOOLS.mupdf_warnings(reset=True):
             report.warnings.append("PDF_ENGINE_WARNINGS")
             if report.parse == "PASS":
@@ -276,19 +285,31 @@ def inspect_pdf(
 
 def main(argv: list[str] | None = None) -> int:
     parser = Parser(description=__doc__)
-    parser.add_argument("path", type=Path, help="Exact local PDF path; never auto-selected")
-    parser.add_argument(
-        "--options-stdin", action="store_true",
-        help="Required: read UTF-8 JSON with nonempty page-scoped expected-text checks",
-    )
+    commands = parser.add_subparsers(dest="operation", required=True)
+    for name, help_text in (
+        ("inspect", "Inspect PDF metadata without rendering or matching text"),
+        ("render", "Render every page in memory without text checks"),
+        ("match", "Match expected text on specified pages without rendering"),
+    ):
+        command = commands.add_parser(name, help=help_text)
+        command.add_argument("path", type=Path, help="Exact local PDF path; never auto-selected")
+        if name == "match":
+            command.add_argument(
+                "--options-stdin", action="store_true",
+                help="Required: read UTF-8 JSON with nonempty page-scoped expected-text checks",
+            )
+    operation = None
     try:
         args = parser.parse_args(argv)
-        if not args.options_stdin:
-            raise InputError("CHECKS_REQUIRED")
-        checks = read_options()
-        report = inspect_pdf(args.path, checks)
+        operation = args.operation
+        checks = None
+        if operation == "match":
+            if not args.options_stdin:
+                raise InputError("CHECKS_REQUIRED")
+            checks = read_options()
+        report = run_operation(args.path, operation, checks)
     except InputError as error:
-        report = Report(errors=[str(error)])
+        report = Report(operation=operation, errors=[str(error)])
     print(json.dumps(asdict(report), ensure_ascii=True))
     return report.exit_code()
 

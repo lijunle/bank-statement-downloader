@@ -1,21 +1,30 @@
 ---
 name: pdf-validation
-description: Validate an explicitly selected local PDF by parsing it, rendering every page in memory, and matching required expected text on specified pages. Use when checking a downloaded or supplied PDF without exposing its contents or exporting images.
+description: Provide independent local PDF capabilities to inspect metadata, check in-memory page rendering, or match supplied text on selected pages. Use these operations without exposing document contents or exporting images; callers define their own validation workflow.
 ---
 
 # PDF Validation
 
-Use [validate_pdf.py](validate_pdf.py) to inspect one exact local file. It does not
-operate browsers, choose the newest download, download files, or determine whether
-an application works end to end. The caller must establish the file's provenance
-and decide which document and content are expected.
+Use [validate_pdf.py](validate_pdf.py) as a capability tool, not a prescribed
+validation workflow:
+
+| Operation | Capability | Not performed |
+| --------- | ---------- | ------------- |
+| `inspect` | Read PDF metadata, page count, password-protection state, and parser diagnostics. | Rendering and text matching. |
+| `render` | Open the PDF and render every page in memory. | Text extraction and matching. |
+| `match` | Open the PDF and locate supplied expected text on specified pages. | Rendering and visual inspection. |
+
+Each operation is independently callable. The caller chooses which operations to
+run, establishes the file's provenance, supplies expectations, and decides
+acceptance criteria. The tool neither operates a browser nor chooses downloads,
+and no individual command represents application end-to-end success.
 
 The script reads the source without modifying it. It makes no network requests,
 saves no images or extracted text, and emits one JSON object containing counts,
 statuses, page numbers, and diagnostic codes, not filenames, expected strings,
 extracted text, or raw parser messages. `--help` prints usage instead of JSON.
 
-## 1. Prepare the local tool once
+## Setup
 
 Use Python 3.10 or newer with the exact dependency in
 [requirements.txt](requirements.txt). Keep a dedicated virtual environment in
@@ -43,61 +52,58 @@ Installation may access the package index; document inspection itself stays loca
 The parser is not a sandbox or a malware detector. Use an appropriately isolated
 environment for files from untrusted sources.
 
-## 2. Select the exact file and expected content
+## Operations
 
 Identify the exact path before invoking the script. Do not substitute a directory,
 wildcard, arbitrary latest file, or an older copy when the intended file is
 unavailable. Missing input or tooling is an incomplete check, not proof that a
 PDF is bad.
 
-Every invocation must include at least one page-scoped expected-text check. Derive
-meaningful expected content from the caller's request or an independent reference,
-not from whatever text happens to be in the candidate PDF. Include all content
-needed for the requested validation; do not reduce it to a generic word just to
-obtain a match. If expected content is unavailable, obtain it before running the
-check rather than silently performing a structure-only validation.
+### Inspect metadata
 
-## 3. Run parsing, rendering, and content checks
+```powershell
+& .\.venv\Scripts\python.exe -X utf8 .\validate_pdf.py inspect 'C:\private\document.pdf'
+```
 
-Every validation has three required stages:
+Reports whether the file can be opened as a nonempty PDF with pages, its byte
+count and page count, `passwordProtected`, and parser repair/warning evidence.
+It does not load page content, render pages, read stdin, or require text checks.
 
-1. **Parse:** open the file and confirm it is a nonempty PDF with pages. Reject
-   opening-password protection and report parser repairs or engine warnings.
-2. **Render in memory:** render **every page**, one at a time, at 72 DPI. Blank
-   pages and image-only pages can render successfully; extractable text is not
-   a rendering requirement. Release each bitmap before text extraction or the
-   next page's allocation. No images are exported or visually inspected.
-3. **Match expected text:** extract text locally from the specified pages and
-   search for every supplied expected literal. Return matching page numbers and
-   statuses, never document text.
+Password protection is a fact for the caller to interpret, not an automatic
+acceptance decision. `inspect` can report `passwordProtected: true` without
+failing to inspect metadata; parser warnings may still make its result
+`INCONCLUSIVE`. The caller must inspect the flag, not just the exit code.
 
-The script also checks whether the source size or modification time changed
-during inspection.
+### Check rendering
+
+```powershell
+& .\.venv\Scripts\python.exe -X utf8 .\validate_pdf.py render 'C:\private\document.pdf'
+```
+
+Renders every page at 72 DPI in memory without extracting text. Each bitmap is
+released immediately after its dimensions are checked, before allocating the
+next page. No images are encoded or saved. Blank and image-only pages can pass
+this operation without proving anything about their content.
 
 The renderer limits a page to 16 million pixels at this resolution. An invalid or
 oversized page is listed in `skippedPages` and makes rendering `INCONCLUSIVE`,
 not `PASS`; Python-reported rendering memory exhaustion is also incomplete rather
 than proof of a bad PDF. This bounds canvas allocation, not every possible parser
 resource cost; there is no guarantee of safe execution for arbitrary hostile files.
-Normalize each selected page's extracted whitespace once, within the text-extraction
-error boundary. Python-reported memory exhaustion during extraction/normalization
-makes that page's text unavailable. Memory exhaustion during subsequent matching
-returns `CONTENT_CHECK_RESOURCE_LIMIT` with inconclusive content while retaining
-the completed parsing/rendering results.
+
+### Match text
 
 Supply sensitive values through UTF-8 JSON on stdin with `--options-stdin`, not
 command-line options. Both this flag and a nonempty `checks` array are required;
 omitting either returns `CHECKS_REQUIRED` with exit code `2`, before opening the
-file. There are no built-in account, date, financial-institution, or
-document-layout rules. Invalid JSON, including integer-conversion or nesting-limit
-failures, returns `INVALID_OPTIONS_JSON`. Unreadable stdin and Python-reported
-input memory exhaustion return `OPTIONS_UNREADABLE` and `OPTIONS_RESOURCE_LIMIT`.
-These are input/tooling errors (exit `2`), not evidence of an invalid PDF.
+file. This requirement applies only to `match`; `inspect` and `render` neither
+accept nor need `--options-stdin`.
 
 Each check requires a nonempty `text` and explicit one-based `pages`. The script
 does a case-sensitive literal substring search after collapsing whitespace in
 both strings. It never interprets the text as a regular expression or silently
-converts dates. The report identifies checks by their one-based input index.
+converts dates. Only requested pages are loaded for text extraction, once per page,
+and no page is rendered. The report identifies checks by their one-based input index.
 
 This example contains synthetic values only:
 
@@ -110,47 +116,51 @@ $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
     {"text": "Period 2026-08", "pages": [1]}
   ]
 }
-'@ | & .\.venv\Scripts\python.exe -X utf8 .\validate_pdf.py 'C:\private\document.pdf' --options-stdin
+'@ | & .\.venv\Scripts\python.exe -X utf8 .\validate_pdf.py match 'C:\private\document.pdf' --options-stdin
 ```
 
 Do not put real expected values or options files in a repository or report. Feed
 them from a private local source without logging the request. The script accepts
 a UTF-8 BOM as well.
 
-`FOUND` means only that the literal appeared on a requested page. It is **not**
-semantic proof of document identity: an identifier can appear in unrelated body
-text. Choose pages deliberately and combine identifying fields with the expected
-document period or other distinguishing content. Avoid a single generic name or
-short identifier as the only evidence when more context is required.
+`FOUND` means the literal appeared on at least one requested page. `NOT_FOUND`
+means none of those pages contained it in the extracted text. Both are completed
+search results and can return exit `0`; the caller decides whether absence fails
+its validation. Missing or empty extracted text without a match makes a check
+`INCONCLUSIVE`. No OCR or image-review fallback is provided.
 
-If a required check is `NOT_FOUND` or `INCONCLUSIVE`, content has not been
-confirmed and the exit code is `2`, even when parsing and rendering pass. Missing
-text does not prove PDF corruption: image-only pages, formatting, fonts, or
-extraction failures can prevent a match. No OCR, image review, or external
-analysis service is used as a fallback. Report the unconfirmed check; do not
-remove or weaken expectations just to get a successful exit code.
+Python-reported memory exhaustion during extraction or normalization makes that
+page's text unavailable. Exhaustion during matching returns
+`CONTENT_CHECK_RESOURCE_LIMIT` with inconclusive content while retaining parse
+evidence. Malformed or excessively nested JSON returns `INVALID_OPTIONS_JSON`;
+unreadable or exhausted stdin returns `OPTIONS_UNREADABLE` or
+`OPTIONS_RESOURCE_LIMIT`. Diagnostics never contain the expected strings.
 
-### Password-protected documents fail validation
+### Protected or changing files
 
-A PDF that requires an opening password is a **FAIL**, with `PASSWORD_PROTECTED`
-and exit code `1`. Rendering and text checks are not run. Do not ask for
-a password or attempt to unlock it: the tool has no password input or authentication
-path, and a `password` key in stdin JSON is rejected as `INVALID_OPTIONS`.
+No operation accepts passwords or attempts authentication. `render` and `match`
+cannot process a PDF requiring an opening password: they return
+`PASSWORD_PROTECTED`, exit `2`, and `NOT_RUN` for the requested capability, while
+retaining metadata. Encryption with no opening password does not itself prevent
+the operations from running.
 
-This is a validation-policy failure, not a claim that the PDF is corrupt. An
-encrypted PDF that opens without a password, such as one with only owner permission
-restrictions, still undergoes the normal rendering and required content checks.
+Every completed operation checks whether the source size or modification time
+changed during that invocation. `INPUT_CHANGED_DURING_CHECK` makes its evidence
+incomplete. The caller is responsible for using the same unchanged file when
+combining results from multiple invocations.
 
-## 4. Interpret the result
+## Result contract
 
-Example of successful parsing, rendering, and the two required checks above:
+Example from `match`; it deliberately does not claim to have rendered pages:
 
 ```json
 {
+  "operation": "match",
   "bytes": 248182,
   "pages": 8,
+  "passwordProtected": false,
   "parse": "PASS",
-  "render": "PASS",
+  "render": "NOT_RUN",
   "failedPages": [],
   "skippedPages": [],
   "warnings": [],
@@ -163,7 +173,12 @@ Example of successful parsing, rendering, and the two required checks above:
 }
 ```
 
-- **Parsing:** `PASS`, `FAIL` (including opening-password protection),
+- **Operation:** `inspect`, `render`, or `match`. Invalid command input can report
+  `null` when no valid operation was parsed. Unexecuted capabilities remain
+  `NOT_RUN`; never combine them into an implied overall pass.
+- **Metadata:** `bytes`, `pages`, and `passwordProtected` are `null` when not
+  established. `passwordProtected: true` is not an automatic tool-level `FAIL`.
+- **Parsing:** `PASS`, `FAIL` (not a usable PDF),
   `INCONCLUSIVE` (repair or engine warnings), or `NOT_RUN` (input/tooling problem).
   A repaired document is never reported as a clean parse success.
 - **Rendering:** `PASS` only after every page produces a bitmap with nonzero
@@ -172,12 +187,12 @@ Example of successful parsing, rendering, and the two required checks above:
   `failedPages`; `INCONCLUSIVE` includes `skippedPages`. `NOT_RUN` means rendering
   could not begin.
 - **Content:** `NOT_RUN`, `FOUND`, `NOT_FOUND`, or `INCONCLUSIVE`. `NOT_RUN`
-  means required input is missing or another prerequisite prevented the checks;
-  it never permits a successful exit. Each completed check's
+  means matching was not requested, its input was missing, or a prerequisite
+  prevented execution. Each completed check's
   result includes requested pages and `matchedPages`. A check is inconclusive
   when no match is found and at least one requested page has unavailable/empty
-  extracted text. Rendering can still pass, but exit code `0` requires **all**
-  content checks to be `FOUND`.
+  extracted text. The aggregate is `INCONCLUSIVE` if any check is inconclusive,
+  otherwise `NOT_FOUND` if any did not match, otherwise `FOUND`.
 - **Diagnostics:** `warnings` and `errors` contain fixed codes only. Examples:
   `PDF_REPAIRED`, `PDF_ENGINE_WARNINGS`, `FILE_NOT_FOUND`, `DEPENDENCY_MISSING`,
   `CHECKS_REQUIRED`, `PASSWORD_PROTECTED`, `PAGE_OUT_OF_RANGE`, and
@@ -188,15 +203,17 @@ Exit codes:
 
 | Code | Meaning |
 | ---- | ------- |
-| `0` | Parsing and in-memory rendering passed and every required expected-text check was found; still not visual, semantic, or end-to-end acceptance. |
-| `1` | Opening-password protection, a file-open/format failure, or a page-rendering failure was observed. |
+| `0` | The requested capability completed without parser warnings/errors. For `match`, both `FOUND` and `NOT_FOUND` count as completed searches. |
+| `1` | A file-open/format failure or page-rendering failure was observed. |
 | `2` | Input/tooling problem, parser warning/repair, skipped work, or unconfirmed text. Inspect the JSON for the reason. |
 
-When both a file validation failure and an incomplete check exist, exit code `1`
+When both a technical failure and an incomplete check exist, exit code `1`
 takes precedence; the separate fields retain both outcomes. Inspect the exit
 status **and** JSON. Report only sanitized evidence and any unconfirmed checks,
-not the private path or content. Do not infer download provenance, freshness,
-business correctness, visual correctness, or application E2E success from this result.
+not the private path or content. A zero exit code never means the caller's full
+workflow passed. Text matches are literal evidence, not semantic identity or
+visual correctness; successful rendering does not validate layout or clipping.
+The caller defines required operations, expected fields, and acceptance gates.
 
 Keep source documents and sensitive options outside repositories and shared reports.
 If you created a private temporary options file, remove only that file when finished;
@@ -212,7 +229,7 @@ documents or credentials are needed:
 ```
 
 Keep dependency changes explicit and rerun these tests after changing the script
-or pin. Preserve tests for required content checks, Unicode paths, blank/image-only
+or pin. Preserve tests for capability isolation, match input checks, Unicode paths, blank/image-only
 pages, malformed and repaired PDFs, encrypted files, scoped text, render/extraction
 and matching failures, invalid input limits, and sanitized errors. Verify that
 inspection writes no image or text files and releases each bitmap before allocating

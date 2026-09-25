@@ -107,24 +107,48 @@ a successful PDF-download end-to-end (E2E) result.
    the browser's download entry, timing, and local file. Avoid concurrent downloads
    that make attribution ambiguous; if attribution cannot be established, the
    download check is incomplete. Do not inspect an arbitrary latest or older PDF.
-3. Inspect that exact completed file with the standalone
-   [PDF validation skill](../.agents/skills/pdf-validation/SKILL.md). Record its
-   byte count and run all three stages: PDF parsing, rendering every page in
-   memory, and required page-scoped matching against locally extracted text.
-   No image export or visual inspection is required. Rendering success establishes
+3. Run the standalone [PDF skill](../.agents/skills/pdf-validation/SKILL.md)'s
+   **`inspect`** capability on that exact completed file. Record byte and page
+   counts and parser diagnostics. **This workflow rejects opening-password
+   protection:** `passwordProtected: true` is **FAIL**, even if metadata inspection
+   completed with exit `0`. Do not request a password or attempt to unlock the
+   file. Parser repairs, warnings, or unavailable metadata do not establish a pass.
+4. Run **`render`** on the same unchanged file and require every page to render
+   successfully. No image export or visual inspection is required. This establishes
    technical renderability, not that layout, glyphs, or page clipping look correct.
-4. Supply expected account/group identifiers or displayed masks, account/product
+5. Supply expected account/group identifiers or displayed masks, account/product
    names, and the selected statement period from the bank UI or established
    mapping. Use the distinguishing fields appropriate to the flow and pages where
    that information is expected. For consolidated statements, use the documented
    group mapping. Do not derive expected values from the candidate PDF, check only
    its filename, or rely on an isolated short mask or generic product name.
-   All required fields must be found; report only match results and page numbers,
-   not account details or extracted text. A missing match or unavailable text is
-   unconfirmed content, not automatically corruption. Image-only pages may render
-   successfully but cannot establish a content match without extractable text.
-   Report an incomplete check rather than weakening the expectations or switching
-   to an image-review fallback.
+   Run **`match`** with these page-scoped expectations on that same file. All
+   required fields must be `FOUND`; a completed search returning `NOT_FOUND` is
+   not a pass for this workflow, even though the command exits `0`. Report only
+   match results and page numbers, not account details or extracted text.
+   Unavailable or unconfirmed text does not automatically prove corruption.
+   Image-only pages may render successfully but cannot establish a content match
+   without extractable text. Report an incomplete check rather than weakening
+   expectations or switching to an image-review fallback.
+
+All three capabilities are mandatory **in this workflow**, unless an earlier
+failure or unavailable prerequisite prevents continuation. List any unexecuted
+operation explicitly; never infer it from another command's success. The PDF
+skill exposes independent capabilities and does not decide these acceptance rules.
+
+To pass this file-validation stage, require:
+
+| Evidence | Required result |
+| -------- | --------------- |
+| `inspect` | `parse: PASS`, `passwordProtected: false`, nonzero bytes/pages |
+| `render` | `parse: PASS`, `render: PASS`, no failed or skipped pages |
+| `match` | `parse: PASS`, `contentCheck: FOUND`, every requested check `FOUND` |
+| All three | No errors or warnings; same unchanged file with consistent bytes/pages |
+
+The caller combines these results with the earlier download attribution and UI
+evidence. Individual exit codes are not an E2E verdict. If the file changes or is
+replaced between operations, discard the combined evidence and reestablish which
+download is being checked.
 
 The popup's **Downloaded** status means it triggered a download, not that the
 browser finished saving a valid statement. A success message, HTTP 200, `.pdf`
@@ -150,7 +174,9 @@ Assign outcomes to the checks actually attempted and state the overall scope:
 - **FAIL:** observed extension behavior contradicts the scoped expectation, such
   as wrong account mapping, missing available statements, an extension download
   failure, or an unreadable or mismatched downloaded document. State the failed
-  stage and evidence; do not invent a root cause.
+  stage and evidence; do not invent a root cause. A downloaded statement that
+  requires an opening password also fails this workflow's acceptance policy;
+  that does not by itself prove a bank API or extension implementation bug.
 - **BLOCKED:** a prerequisite or required evidence is unavailable, for example
   expired authentication, bank unavailability, no user-approved PDF available,
   browser download restrictions, or inability to inspect or attribute the file.
@@ -175,8 +201,9 @@ Checks: authenticated page <result>; real toolbar + refresh <result>;
         account mapping <result>; statement dates/order/availability <result>
 Download evidence: <new completed download correlated with the popup click, or gap>;
                    bytes=<count or not obtained>; local parser/renderer=<tool>;
-                   parsing=<result>; in-memory rendering=<result>;
-                   required text matches=<results and page numbers>;
+                   inspect=<parsing and password-protection result>;
+                   render=<in-memory rendering result>;
+                   match=<required text results and page numbers>;
                    account/group match=<result>; period match=<result>
 Result: <PASS (PDF-download E2E) | PASS (UI only) | FAIL | BLOCKED>; <reason>
 Untested: <operations and limitations>
