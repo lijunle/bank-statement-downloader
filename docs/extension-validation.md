@@ -98,83 +98,27 @@ a successful PDF-download end-to-end (E2E) result.
 
 ## 5. Download and inspect the selected document
 
-1. Before clicking, establish the current browser download state so that an
-   existing file cannot be mistaken for this action's result. Arrange a private
-   destination outside the repository.
-2. Click the user-approved statement row through the real popup. Observe its
-   **Downloading...** state and any result or error, then verify a new browser
-   download starts and completes. Correlate that download with this click using
-   the browser's download entry, timing, and local file. Avoid concurrent downloads
-   that make attribution ambiguous; if attribution cannot be established, the
-   download check is incomplete. Do not inspect an arbitrary latest or older PDF.
-3. Run the standalone [PDF skill](../.agents/skills/pdf-validation/SKILL.md)'s
-   **`inspect`** capability on that exact completed file. Record byte and page
-   counts and parser diagnostics. **This workflow rejects opening-password
-   protection:** `passwordProtected: true` is **FAIL**, even if metadata inspection
-   completed with exit `0`. Do not request a password or attempt to unlock the
-   file. Require `status: COMPLETE`, `repaired: false`, and no parser warnings
-   or errors; unavailable metadata does not establish a pass.
-4. Run **`render`** on the same unchanged file and require every page to render
-   successfully. No image export or visual inspection is required. This establishes
-   technical renderability, not that layout, glyphs, or page clipping look correct.
-5. Supply expected account/group identifiers or displayed masks, account/product
-   names, and the selected statement period from the bank UI or established
-   mapping. Use the distinguishing fields appropriate to the flow. For
-   consolidated statements, use the documented group mapping. Do not derive
-   expected values from the candidate PDF, check only
-   its filename, or rely on an isolated short mask or generic product name.
-   Run **`match` once per expected field**, supplying that one value through
-   `--text`. It searches the whole PDF and returns matching page numbers;
-   the supplied value and extracted text are compared literally, without trimming
-   or whitespace normalization.
-   No JSON batch or page selection is required. Multiple fields mean multiple
-   calls on the same file, not multiple values in one `--text` argument. All required
-   fields must have `status: COMPLETE` and `result: FOUND`; a completed search
-   returning `NOT_FOUND` is not a pass for this workflow, even though the command
-   exits `0`. Report only
-   match results and page numbers, not account details or extracted text. A value
-   can occur in unrelated text elsewhere in the PDF; combine identifying fields
-   and the period and use the documented account/group mapping rather than
-   interpreting any single occurrence as proof of identity.
-   Unavailable or unconfirmed text does not automatically prove corruption.
-   Image-only pages may render successfully but cannot establish a content match
-   without extractable text. Report an incomplete check rather than weakening
-   expectations or switching to an image-review fallback.
+1. Download a user-approved statement through the real popup to a private location
+   outside the repository. Confirm that the completed file belongs to this click,
+   not an earlier download.
+2. Use the [PDF validation skill](../.agents/skills/pdf-validation/SKILL.md) to
+   inspect that exact file, verify every page can render, and search its text for
+   the expected account or consolidated group and statement period. Obtain
+   expectations from the selected bank account and statement, not the candidate PDF.
+3. Keep the same unchanged file throughout these checks. Record its byte count and
+   whether the document and content checks completed successfully; retain only
+   sanitized evidence in the result.
 
-Use `--file` for the exact local path in each command. The tool does not echo
-`--text`, but the value may be visible in process arguments, command history, or
-execution logs. Keep invocations with actual account values private; do not copy
-them into the repository, validation report, or PR.
+All three PDF capabilities are required for a download E2E pass. A PDF requiring
+an opening password fails this workflow; do not request a password. Repairs,
+warnings, or unconfirmed content must not be treated as a pass. Technical
+renderability and text matches do not establish visual layout correctness.
+Use the skill and its command help for invocation and result details.
 
-All three capabilities are mandatory **in this workflow**, unless an earlier
-failure or unavailable prerequisite prevents continuation. List any unexecuted
-operation explicitly; never infer it from another command's success. The PDF
-skill exposes independent capabilities and does not decide these acceptance rules.
-
-To pass this file-validation stage, require:
-
-| Evidence | Required result |
-| -------- | --------------- |
-| `inspect` | `status: COMPLETE`, `passwordProtected: false`, `repaired: false`, nonzero bytes/pages |
-| `render` | `status: COMPLETE`, `renderedPages` equals `pages`, no failed or skipped pages |
-| Each `match` | `status: COMPLETE`, `result: FOUND`, nonempty `matchedPages`, `searchedPages` equals `pages`, no failed pages |
-| All calls | No errors or warnings; same unchanged file and consistent page count |
-
-The caller combines these results with the earlier download attribution and UI
-evidence. Individual exit codes are not an E2E verdict. If the file changes or is
-replaced between operations, discard the combined evidence and reestablish which
-download is being checked.
-
-The popup's **Downloaded** status means it triggered a download, not that the
-browser finished saving a valid statement. A success message, HTTP 200, `.pdf`
-filename, byte-size threshold, or `%PDF-` magic header alone is insufficient.
-No fixed file-size threshold establishes readability or correctness.
-
-A quick check does not require a full network capture, another download through
-the bank's UI, or byte-for-byte identity with a bank-UI download. Use targeted
-comparison only when needed to resolve a discrepancy. Keep PDFs, expected values,
-raw diagnostics, and personal filenames private and outside the repository;
-do not upload them to external inspection services.
+A popup success message, HTTP status, filename, file size, or command exit code
+alone is not sufficient evidence. A quick check does not require another bank-UI
+download or a full network capture; investigate discrepancies only as needed.
+Keep PDFs, expected values, and raw diagnostics private and outside the repository.
 
 ## 6. Decide and report the outcome
 
@@ -216,9 +160,7 @@ Checks: authenticated page <result>; real toolbar + refresh <result>;
         account mapping <result>; statement dates/order/availability <result>
 Download evidence: <new completed download correlated with the popup click, or gap>;
                    bytes=<count or not obtained>; local parser/renderer=<tool>;
-                   inspect=<parsing and password-protection result>;
-                   render=<in-memory rendering result>;
-                   match=<required text results and page numbers>;
+                   document checks=<result>; content checks=<result>;
                    account/group match=<result>; period match=<result>
 Result: <PASS (PDF-download E2E) | PASS (UI only) | FAIL | BLOCKED>; <reason>
 Untested: <operations and limitations>
