@@ -13,6 +13,10 @@ for browser setup, extension loading, toolbar actions, and inspection commands;
 use the pinned CLI reference linked there for command syntax. This document
 defines acceptance evidence, not tool- or platform-specific procedures.
 
+The agent performs the checks below, compares observations with the bank's UI and
+expected behavior, and determines the scoped outcome; skills provide operations
+and evidence, not the final verdict. The user handles authentication and consent.
+
 ## 1. Define the scope and confirm access
 
 Agree on the bank, supported account type/flow, and a representative statement
@@ -98,37 +102,30 @@ a successful PDF-download end-to-end (E2E) result.
 
 ## 5. Download and inspect the selected document
 
-1. Before clicking, establish the current browser download state so that an
-   existing file cannot be mistaken for this action's result. Arrange a private
-   destination outside the repository.
-2. Click the user-approved statement row through the real popup. Observe its
-   **Downloading...** state and any result or error, then verify a new browser
-   download starts and completes. Correlate that download with this click using
-   the browser's download entry, timing, and local file. Avoid concurrent downloads
-   that make attribution ambiguous; if attribution cannot be established, the
-   download check is incomplete. Do not inspect an arbitrary latest or older PDF.
-3. Inspect that exact completed file locally. Record its byte count, then open it
-   with a local PDF viewer or renderer and check that its pages render/read
-   correctly, rather than containing an HTML login page, JSON error, or truncated
-   document. Parser checks can supplement rendering; a text-extraction failure
-   or lack of extracted text alone does not prove corruption. Blank or image-only
-   pages are not automatically invalid; inspect them in context with a local
-   viewer or renderer.
-4. Privately verify that the document corresponds to the selected account or
-   documented consolidated group and statement period. Check the document itself,
-   not just its filename. Report only whether these checks matched, not account
-   details or statement contents.
+1. Download a user-approved statement through the real popup to a private location
+   outside the repository. Confirm that the completed file belongs to this click,
+   not an earlier download.
+2. Use the [PDF validation skill](../.agents/skills/pdf-validation/SKILL.md) to
+   inspect that exact file, verify every page can render, and search its text for
+   the bank name, account name or account number/mask, and statement period.
+   For consolidated statements, verify the expected account group. Obtain
+   expectations from the selected bank account and statement, not the candidate PDF.
+   The agent must choose these expected values from the bank UI, invoke the skill,
+   and verify that its results confirm the selected bank, account/group, and period.
+3. Keep the same unchanged file throughout these checks. Record its byte count and
+   whether the document and content checks completed successfully; retain only
+   sanitized evidence in the result.
 
-The popup's **Downloaded** status means it triggered a download, not that the
-browser finished saving a valid statement. A success message, HTTP 200, `.pdf`
-filename, byte-size threshold, or `%PDF-` magic header alone is insufficient.
-No fixed file-size threshold establishes readability or correctness.
+All three PDF capabilities are required for a download E2E pass. A PDF requiring
+an opening password fails this workflow; do not request a password. Repairs,
+warnings, or unconfirmed content must not be treated as a pass. Technical
+renderability and text matches do not establish visual layout correctness.
+Use the skill and its command help for invocation and result details.
 
-A quick check does not require a full network capture, another download through
-the bank's UI, or byte-for-byte identity with a bank-UI download. Use targeted
-comparison only when needed to resolve a discrepancy. Keep PDFs, rendered pages,
-raw diagnostics, and personal filenames private and outside the repository;
-do not upload them to external inspection services.
+A popup success message, HTTP status, filename, file size, or command exit code
+alone is not sufficient evidence. A quick check does not require another bank-UI
+download or a full network capture; investigate discrepancies only as needed.
+Keep PDFs, expected values, and raw diagnostics private and outside the repository.
 
 ## 6. Decide and report the outcome
 
@@ -137,12 +134,15 @@ Assign outcomes to the checks actually attempted and state the overall scope:
 - **PASS:** all checks required by the stated scope have evidence of correct
   behavior. A **PDF-download E2E PASS** requires the real toolbar flow, refreshed
   account mapping, statement listing, the new completed download attributable to
-  the selected row, local readability/rendering, and account/group and period
-  correspondence. It covers only the exercised flow.
+  the selected row, local parsing/in-memory rendering, and required text matches
+  consistent with the selected account/group and period. It covers only the
+  exercised flow, not visual layout or completeness.
 - **FAIL:** observed extension behavior contradicts the scoped expectation, such
   as wrong account mapping, missing available statements, an extension download
   failure, or an unreadable or mismatched downloaded document. State the failed
-  stage and evidence; do not invent a root cause.
+  stage and evidence; do not invent a root cause. A downloaded statement that
+  requires an opening password also fails this workflow's acceptance policy;
+  that does not by itself prove a bank API or extension implementation bug.
 - **BLOCKED:** a prerequisite or required evidence is unavailable, for example
   expired authentication, bank unavailability, no user-approved PDF available,
   browser download restrictions, or inability to inspect or attribute the file.
@@ -166,9 +166,9 @@ Scope: <bank>; <supported account type/flow>; account A; statement A
 Checks: authenticated page <result>; real toolbar + refresh <result>;
         account mapping <result>; statement dates/order/availability <result>
 Download evidence: <new completed download correlated with the popup click, or gap>;
-                   bytes=<count or not obtained>; local viewer/renderer=<tool>;
-                   rendering/readability=<result>; account/group match=<result>;
-                   period match=<result>
+                   bytes=<count or not obtained>; local parser/renderer=<tool>;
+                   document checks=<result>; content checks=<result>;
+                   account/group match=<result>; period match=<result>
 Result: <PASS (PDF-download E2E) | PASS (UI only) | FAIL | BLOCKED>; <reason>
 Untested: <operations and limitations>
 Inapplicable: <operations and reasons>
