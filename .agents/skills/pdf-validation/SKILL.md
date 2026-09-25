@@ -20,13 +20,17 @@ included in reports.
 
 ## Setup and help
 
-Use Python 3.10 or newer and a dedicated virtual environment in this skill's
+Use Python 3.14 and a dedicated virtual environment in this skill's
 `.venv`. Run these commands from the directory containing this `SKILL.md`:
 
 ```powershell
+python --version # Confirm Python 3.14 before creating the environment.
 python -m venv .venv
 & .\.venv\Scripts\python.exe -m pip install -r .\requirements.txt
 ```
+
+When moving from another Python version, recreate this skill's `.venv` with
+Python 3.14 and reinstall its requirements.
 
 Reuse this environment between documents. Install only on initial setup or when
 [requirements.txt](requirements.txt) changes, not into an application's environment.
