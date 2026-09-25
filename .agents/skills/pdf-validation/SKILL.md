@@ -126,7 +126,8 @@ values as sensitive; do not copy or publish them in repositories or reports.
 
 - Supply `--file` with an exact local file, never a wildcard, arbitrary latest download, or
   substitute older copy. Keep the same unchanged file when combining operations;
-  per-invocation size/time checks do not establish provenance across invocations.
+  per-invocation file-identity/size/time checks do not establish provenance across
+  invocations.
 - Each command returns only its own fields plus `status`, `warnings`, and `errors`.
   Invalid CLI arguments return just those shared diagnostic fields. There is no
   combined report claiming unrequested capabilities were checked.

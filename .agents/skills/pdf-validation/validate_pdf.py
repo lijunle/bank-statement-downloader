@@ -114,6 +114,9 @@ def run_operation(path: Path, operation: str, text: str | None = None) -> Result
 
     try:
         document = pymupdf.open(path)
+    except (FileNotFoundError, pymupdf.FileNotFoundError):
+        result.errors.append("FILE_NOT_FOUND")
+        return result
     except pdf_errors:
         result.status = "FAILED"
         result.errors.append("PDF_OPEN_FAILED")
@@ -214,7 +217,11 @@ def run_operation(path: Path, operation: str, text: str | None = None) -> Result
             result.warnings.append("PDF_ENGINE_WARNINGS")
     try:
         after = path.stat()
-        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+        if (
+            before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns
+        ) != (
+            after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns
+        ):
             result.errors.append("INPUT_CHANGED_DURING_CHECK")
     except OSError:
         result.errors.append("INPUT_UNAVAILABLE_AFTER_CHECK")

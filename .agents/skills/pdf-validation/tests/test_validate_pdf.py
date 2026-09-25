@@ -3,6 +3,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -543,6 +544,48 @@ class PdfCapabilityTests(unittest.TestCase):
         self.assertEqual(result.exit_code(), 2)
         self.assertEqual(result.status, "INCOMPLETE")
         self.assertIn("INPUT_CHANGED_DURING_CHECK", result.errors)
+
+    def test_missing_file_between_stat_and_open_is_an_input_error(self):
+        original_open = pymupdf.open
+
+        def remove_then_open(*args, **kwargs):
+            self.pdf.unlink()
+            return original_open(*args, **kwargs)
+
+        with patch.object(pymupdf, "open", side_effect=remove_then_open):
+            code, result = self.call_main("inspect")
+        self.assertEqual(code, 2)
+        self.assertEqual(result["status"], "INCOMPLETE")
+        self.assertEqual(result["errors"], ["FILE_NOT_FOUND"])
+        self.assertIsNone(result["pages"])
+
+    def test_same_size_and_timestamp_replacement_is_detected(self):
+        replacement = self.make_pdf("replacement.pdf", ["Reference XYZ-789\nPeriod 2026-08"])
+        size = max(self.pdf.stat().st_size, replacement.stat().st_size)
+        for path in (self.pdf, replacement):
+            padding = size - path.stat().st_size
+            with path.open("ab") as output:
+                output.write(b"\n" * padding)
+        before = self.pdf.stat()
+        self.assertEqual(before.st_size, replacement.stat().st_size)
+        os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+        original_close = pymupdf.Document.close
+
+        def close_then_replace(document):
+            original_close(document)
+            replacement.replace(self.pdf)
+
+        with patch.object(pymupdf.Document, "close", close_then_replace):
+            code, result = self.call_main()
+        after = self.pdf.stat()
+        self.assertEqual(
+            (before.st_size, before.st_mtime_ns), (after.st_size, after.st_mtime_ns),
+        )
+        self.assertNotEqual(before.st_ino, after.st_ino)
+        self.assertEqual(result["result"], "FOUND")
+        self.assertEqual(code, 2)
+        self.assertEqual(result["status"], "INCOMPLETE")
+        self.assertEqual(result["errors"], ["INPUT_CHANGED_DURING_CHECK"])
 
     def test_missing_dependency_is_tooling_not_a_bad_pdf(self):
         for operation in COMMAND_FIELDS:
