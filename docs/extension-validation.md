@@ -112,20 +112,28 @@ a successful PDF-download end-to-end (E2E) result.
    counts and parser diagnostics. **This workflow rejects opening-password
    protection:** `passwordProtected: true` is **FAIL**, even if metadata inspection
    completed with exit `0`. Do not request a password or attempt to unlock the
-   file. Parser repairs, warnings, or unavailable metadata do not establish a pass.
+   file. Require `status: COMPLETE`, `repaired: false`, and no parser warnings
+   or errors; unavailable metadata does not establish a pass.
 4. Run **`render`** on the same unchanged file and require every page to render
    successfully. No image export or visual inspection is required. This establishes
    technical renderability, not that layout, glyphs, or page clipping look correct.
 5. Supply expected account/group identifiers or displayed masks, account/product
    names, and the selected statement period from the bank UI or established
-   mapping. Use the distinguishing fields appropriate to the flow and pages where
-   that information is expected. For consolidated statements, use the documented
-   group mapping. Do not derive expected values from the candidate PDF, check only
+   mapping. Use the distinguishing fields appropriate to the flow. For
+   consolidated statements, use the documented group mapping. Do not derive
+   expected values from the candidate PDF, check only
    its filename, or rely on an isolated short mask or generic product name.
-   Run **`match`** with these page-scoped expectations on that same file. All
-   required fields must be `FOUND`; a completed search returning `NOT_FOUND` is
-   not a pass for this workflow, even though the command exits `0`. Report only
-   match results and page numbers, not account details or extracted text.
+   Run **`match` once per expected field**, piping that one UTF-8 text value
+   directly to stdin. It searches the whole PDF and returns matching page numbers;
+   no JSON batch or page selection is required. Multiple fields mean multiple
+   calls on the same file, not multiple values in one stdin stream. All required
+   fields must have `status: COMPLETE` and `result: FOUND`; a completed search
+   returning `NOT_FOUND` is not a pass for this workflow, even though the command
+   exits `0`. Report only
+   match results and page numbers, not account details or extracted text. A value
+   can occur in unrelated text elsewhere in the PDF; combine identifying fields
+   and the period and use the documented account/group mapping rather than
+   interpreting any single occurrence as proof of identity.
    Unavailable or unconfirmed text does not automatically prove corruption.
    Image-only pages may render successfully but cannot establish a content match
    without extractable text. Report an incomplete check rather than weakening
@@ -140,10 +148,10 @@ To pass this file-validation stage, require:
 
 | Evidence | Required result |
 | -------- | --------------- |
-| `inspect` | `parse: PASS`, `passwordProtected: false`, nonzero bytes/pages |
-| `render` | `parse: PASS`, `render: PASS`, no failed or skipped pages |
-| `match` | `parse: PASS`, `contentCheck: FOUND`, every requested check `FOUND` |
-| All three | No errors or warnings; same unchanged file with consistent bytes/pages |
+| `inspect` | `status: COMPLETE`, `passwordProtected: false`, `repaired: false`, nonzero bytes/pages |
+| `render` | `status: COMPLETE`, `renderedPages` equals `pages`, no failed or skipped pages |
+| Each `match` | `status: COMPLETE`, `result: FOUND`, nonempty `matchedPages`, `searchedPages` equals `pages`, no failed pages |
+| All calls | No errors or warnings; same unchanged file and consistent page count |
 
 The caller combines these results with the earlier download attribution and UI
 evidence. Individual exit codes are not an E2E verdict. If the file changes or is
