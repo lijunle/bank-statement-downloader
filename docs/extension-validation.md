@@ -13,6 +13,10 @@ for browser setup, extension loading, toolbar actions, and inspection commands;
 use the pinned CLI reference linked there for command syntax. This document
 defines acceptance evidence, not tool- or platform-specific procedures.
 
+The agent performs the checks below, compares observations with the bank's UI and
+expected behavior, and determines the scoped outcome; skills provide operations
+and evidence, not the final verdict. The user handles authentication and consent.
+
 ## 1. Define the scope and confirm access
 
 Agree on the bank, supported account type/flow, and a representative statement
