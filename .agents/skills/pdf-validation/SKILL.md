@@ -13,10 +13,6 @@ Use [validate_pdf.py](validate_pdf.py) for three independent operations:
 | `render` | Render every page in memory. | Text extraction or image export. |
 | `match` | Search the entire PDF for one literal text value. | Rendering, OCR, or visual inspection. |
 
-This skill provides capabilities, not a prescribed validation workflow. The caller
-selects operations, establishes the exact file's provenance, supplies expectations,
-and decides acceptance. A successful command is not application E2E success.
-
 No command modifies the source, writes images or document text, or makes network
 requests. Normal output is a single sanitized JSON object. Help is plain text.
 Private paths, search values, extracted content, and raw parser messages are not
