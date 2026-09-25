@@ -45,7 +45,7 @@ class Report:
     failedPages: list[int] = field(default_factory=list)
     skippedPages: list[int] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
-    contentCheck: str = "NOT_REQUESTED"
+    contentCheck: str = "NOT_RUN"
     checks: list[CheckResult] = field(default_factory=list)
     exportedPages: list[int] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -57,7 +57,7 @@ class Report:
             self.errors
             or self.parse != "PASS"
             or self.render != "PASS"
-            or self.contentCheck not in ("NOT_REQUESTED", "FOUND")
+            or self.contentCheck != "FOUND"
         ):
             return 2
         return 0
@@ -84,9 +84,13 @@ def read_options() -> tuple[str | None, list[TextCheck]]:
     password = options.get("password")
     if password is not None and not isinstance(password, str):
         raise InputError("INVALID_PASSWORD_OPTION")
-    checks = options.get("checks", [])
+    if "checks" not in options:
+        raise InputError("CHECKS_REQUIRED")
+    checks = options["checks"]
     if not isinstance(checks, list):
         raise InputError("INVALID_TEXT_CHECKS")
+    if not checks:
+        raise InputError("CHECKS_REQUIRED")
     parsed = []
     for check in checks:
         if not isinstance(check, dict) or set(check) != {"text", "pages"}:
@@ -120,7 +124,7 @@ def check_text(
             status = "NOT_FOUND"
         results.append(CheckResult(index, check.pages, status, matched))
     if not results:
-        return "NOT_REQUESTED", results
+        return "NOT_RUN", results
     if any(result.result == "INCONCLUSIVE" for result in results):
         return "INCONCLUSIVE", results
     return (
@@ -136,7 +140,10 @@ def inspect_pdf(
     render_dir: Path | None,
     export_pages: list[int],
 ) -> Report:
-    report = Report(contentCheck="INCONCLUSIVE" if checks else "NOT_REQUESTED")
+    report = Report()
+    if not checks:
+        report.errors.append("CHECKS_REQUIRED")
+        return report
     try:
         import pymupdf
     except ModuleNotFoundError:
@@ -291,13 +298,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("path", type=Path, help="Exact local PDF path; never auto-selected")
     parser.add_argument(
         "--options-stdin", action="store_true",
-        help="Read UTF-8 JSON with optional password and page-scoped text checks",
+        help="Required: read UTF-8 JSON with nonempty page-scoped text checks and an optional password",
     )
     parser.add_argument("--render-dir", type=Path, help="Existing private PNG output directory")
     parser.add_argument("--render-pages", type=int, nargs="+", help="One-based pages to export")
     try:
         args = parser.parse_args(argv)
-        password, checks = read_options() if args.options_stdin else (None, [])
+        if not args.options_stdin:
+            raise InputError("CHECKS_REQUIRED")
+        password, checks = read_options()
         if (args.render_dir is None) != (args.render_pages is None):
             raise InputError("EXPORT_OPTIONS_MUST_BE_PAIRED")
         pages = page_numbers(args.render_pages) if args.render_pages is not None else []

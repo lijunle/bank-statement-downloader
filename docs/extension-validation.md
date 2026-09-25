@@ -115,9 +115,12 @@ a successful PDF-download end-to-end (E2E) result.
    pages are not automatically invalid; inspect them in context with a local
    viewer or renderer.
    The standalone [PDF validation skill](../.agents/skills/pdf-validation/SKILL.md)
-   provides a local parser/renderer for this step. Pass the exact file correlated
-   with the download; its file-level result does not establish extension E2E
-   success or replace the account/period check.
+   provides a local parser/renderer with required page-scoped expected-text checks.
+   Pass the exact file correlated with the download and meaningful expectations
+   for the selected account/group and period from the bank UI or established
+   mapping. Its file-level result does not establish extension E2E success or
+   replace the account/period check. If content cannot be confirmed automatically,
+   inspect it locally rather than omitting the required checks.
 4. Privately verify that the document corresponds to the selected account or
    documented consolidated group and statement period. Check the document itself,
    not just its filename. Report only whether these checks matched, not account
