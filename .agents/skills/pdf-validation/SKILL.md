@@ -12,7 +12,7 @@ and decide which document and content are expected.
 
 The script reads the source without modifying it. It makes no network requests
 and emits one JSON object containing counts, statuses, page numbers, and diagnostic
-codes, not filenames, passwords, expected strings, extracted text, or raw parser
+codes, not filenames, expected strings, extracted text, or raw parser
 messages. `--help` prints usage instead of JSON.
 
 ## 1. Prepare the local tool once
@@ -22,6 +22,10 @@ Use Python 3.10 or newer with the exact dependency in
 this skill's `.venv` directory and reuse it between documents. Do not install
 into an application's dependency environment, automatically upgrade the pin, or
 delete the environment after each check.
+
+The PyMuPDF 1.28.2 pin includes MuPDF 1.28.2. Do not reuse an older installed
+renderer after updating the requirements: MuPDF versions through 1.27.0 are
+affected by [CVE-2026-3308](https://www.cve.org/CVERecord?id=CVE-2026-3308).
 
 The commands below run from the directory containing this `SKILL.md`. From
 elsewhere, use absolute paths to the skill's interpreter and script. Activation
@@ -58,7 +62,8 @@ check rather than silently performing a structure-only validation.
 The script:
 
 1. Opens the file and confirms that it is a nonempty PDF with pages.
-2. Detects password requirements, parser repairs, and engine warnings.
+2. Rejects PDFs that require an opening password and detects parser repairs and
+   engine warnings.
 3. Renders **every page**, one at a time, at 72 DPI in memory. It does not require
    extractable text, so blank pages and image-only pages can render successfully.
 4. Searches for every supplied expected literal on its explicitly selected pages.
@@ -69,6 +74,9 @@ oversized page is listed in `skippedPages` and makes rendering `INCONCLUSIVE`,
 not `PASS`; Python-reported rendering memory exhaustion is also incomplete rather
 than proof of a bad PDF. This bounds canvas allocation, not every possible parser
 resource cost; there is no guarantee of safe execution for arbitrary hostile files.
+Python-reported memory exhaustion during text extraction makes that content
+check unavailable; during PNG encoding/export it reports `PAGE_EXPORT_FAILED`.
+These failures are reported in sanitized JSON rather than a raw traceback.
 
 Supply sensitive values through UTF-8 JSON on stdin with `--options-stdin`, not
 command-line options. Both this flag and a nonempty `checks` array are required;
@@ -109,16 +117,16 @@ failures, the content result stays `INCONCLUSIVE` and the exit code is `2`, even
 when rendering succeeds. Inspect those pages locally and report manual findings
 separately; do not remove the required checks to get a successful exit code.
 
-### Password-protected documents
+### Password-protected documents fail validation
 
-An encrypted PDF may require a password to run these same checks. If it does,
-supply a string `password` alongside the required `checks` array when the user
-has authorized access. A password alone is not a validation request.
+A PDF that requires an opening password is a **FAIL**, with `PASSWORD_PROTECTED`
+and exit code `1`. Rendering, text checks, and exports are not run. Do not ask for
+a password or attempt to unlock it: the tool has no password input or authentication
+path, and a `password` key in stdin JSON is rejected as `INVALID_OPTIONS`.
 
-Do not ask users to paste passwords into chat or put real passwords in command
-arguments, a repository, or a report. Feed them through the private stdin source.
-For an unencrypted PDF, omit the password; never add or guess one unnecessarily.
-Missing or rejected passwords produce an explicit `BLOCKED` result.
+This is a validation-policy failure, not a claim that the PDF is corrupt. An
+encrypted PDF that opens without a password, such as one with only owner permission
+restrictions, still undergoes the normal rendering and required content checks.
 
 ## 4. Inspect exported pages when automated evidence needs review
 
@@ -172,11 +180,11 @@ Example of successful parsing, rendering, and the two required checks above:
 }
 ```
 
-- **Parsing:** `PASS`, `FAIL`, `BLOCKED` (password required/rejected),
+- **Parsing:** `PASS`, `FAIL` (including opening-password protection),
   `INCONCLUSIVE` (repair or engine warnings), or `NOT_RUN` (input/tooling problem).
   A repaired document is never reported as a clean parse success.
 - **Rendering:** `PASS` only after every page renders; `FAIL` includes the
-  one-based `failedPages`; `INCONCLUSIVE` includes `skippedPages`. `BLOCKED` or
+  one-based `failedPages`; `INCONCLUSIVE` includes `skippedPages`.
   `NOT_RUN` means rendering could not begin.
 - **Content:** `NOT_RUN`, `FOUND`, `NOT_FOUND`, or `INCONCLUSIVE`. `NOT_RUN`
   means required input is missing or another prerequisite prevented the checks;
@@ -187,7 +195,7 @@ Example of successful parsing, rendering, and the two required checks above:
   content checks to be `FOUND`.
 - **Diagnostics:** `warnings` and `errors` contain fixed codes only. Examples:
   `PDF_REPAIRED`, `PDF_ENGINE_WARNINGS`, `FILE_NOT_FOUND`, `DEPENDENCY_MISSING`,
-  `CHECKS_REQUIRED`, `PASSWORD_REQUIRED`, `PAGE_OUT_OF_RANGE`, `PAGE_EXPORT_FAILED`, and
+  `CHECKS_REQUIRED`, `PASSWORD_PROTECTED`, `PAGE_OUT_OF_RANGE`, `PAGE_EXPORT_FAILED`, and
   `INPUT_CHANGED_DURING_CHECK`. A tooling error must not become an empty,
   success-shaped result.
 
@@ -196,10 +204,10 @@ Exit codes:
 | Code | Meaning |
 | ---- | ------- |
 | `0` | Parsing and rendering passed, every required expected-text check was found, and requested exports completed; still not semantic or end-to-end acceptance. |
-| `1` | A definite file-open/format or page-rendering failure was observed. |
-| `2` | Input/tooling/export problem, password block, parser warning/repair, skipped work, or unconfirmed text. Inspect the JSON for the reason. |
+| `1` | Opening-password protection, a file-open/format failure, or a page-rendering failure was observed. |
+| `2` | Input/tooling/export problem, parser warning/repair, skipped work, or unconfirmed text. Inspect the JSON for the reason. |
 
-When both a definite file failure and an incomplete check exist, exit code `1`
+When both a file validation failure and an incomplete check exist, exit code `1`
 takes precedence; the separate fields retain both outcomes. Inspect the exit
 status **and** JSON. Report only sanitized evidence and outstanding manual checks,
 not the private path or content. Do not infer download provenance, freshness,

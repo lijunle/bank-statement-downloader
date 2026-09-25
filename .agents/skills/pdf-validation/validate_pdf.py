@@ -74,16 +74,13 @@ def page_numbers(value: object) -> list[int]:
     return sorted(value)
 
 
-def read_options() -> tuple[str | None, list[TextCheck]]:
+def read_options() -> list[TextCheck]:
     try:
         options = json.loads(sys.stdin.buffer.read().decode("utf-8-sig"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise InputError("INVALID_OPTIONS_JSON") from None
-    if not isinstance(options, dict) or options.keys() - {"password", "checks"}:
+    if not isinstance(options, dict) or options.keys() - {"checks"}:
         raise InputError("INVALID_OPTIONS")
-    password = options.get("password")
-    if password is not None and not isinstance(password, str):
-        raise InputError("INVALID_PASSWORD_OPTION")
     if "checks" not in options:
         raise InputError("CHECKS_REQUIRED")
     checks = options["checks"]
@@ -99,7 +96,7 @@ def read_options() -> tuple[str | None, list[TextCheck]]:
         if not isinstance(text, str) or not text.strip():
             raise InputError("INVALID_EXPECTED_TEXT")
         parsed.append(TextCheck(text, page_numbers(check["pages"])))
-    return password, parsed
+    return parsed
 
 
 def check_text(
@@ -135,7 +132,6 @@ def check_text(
 
 def inspect_pdf(
     path: Path,
-    password: str | None,
     checks: list[TextCheck],
     render_dir: Path | None,
     export_pages: list[int],
@@ -195,16 +191,14 @@ def inspect_pdf(
             return report
         try:
             report.pages = document.page_count
-            needs_password = document.needs_pass and not document.authenticate(password or "")
+            needs_password = document.needs_pass
         except pdf_errors:
             report.parse = "FAIL"
             report.errors.append("PDF_METADATA_FAILED")
             return report
         if needs_password:
-            report.parse = report.render = "BLOCKED"
-            report.errors.append(
-                "PASSWORD_REQUIRED" if password is None else "PASSWORD_REJECTED"
-            )
+            report.parse = "FAIL"
+            report.errors.append("PASSWORD_PROTECTED")
             return report
         if report.pages == 0:
             report.parse = "FAIL"
@@ -261,7 +255,7 @@ def inspect_pdf(
             if number in text_pages:
                 try:
                     texts[number] = page.get_text()
-                except pdf_errors:
+                except (MemoryError, *pdf_errors):
                     texts[number] = None
                     report.warnings.append("TEXT_EXTRACTION_FAILED")
             if render_dir is not None and number in export_pages:
@@ -270,7 +264,7 @@ def inspect_pdf(
                     with (render_dir / f"page-{number:04}.png").open("xb") as output:
                         output.write(image)
                     report.exportedPages.append(number)
-                except (OSError, *pdf_errors):
+                except (OSError, MemoryError, *pdf_errors):
                     report.errors.append("PAGE_EXPORT_FAILED")
 
         if report.failedPages:
@@ -298,7 +292,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("path", type=Path, help="Exact local PDF path; never auto-selected")
     parser.add_argument(
         "--options-stdin", action="store_true",
-        help="Required: read UTF-8 JSON with nonempty page-scoped text checks and an optional password",
+        help="Required: read UTF-8 JSON with nonempty page-scoped expected-text checks",
     )
     parser.add_argument("--render-dir", type=Path, help="Existing private PNG output directory")
     parser.add_argument("--render-pages", type=int, nargs="+", help="One-based pages to export")
@@ -306,11 +300,11 @@ def main(argv: list[str] | None = None) -> int:
         args = parser.parse_args(argv)
         if not args.options_stdin:
             raise InputError("CHECKS_REQUIRED")
-        password, checks = read_options()
+        checks = read_options()
         if (args.render_dir is None) != (args.render_pages is None):
             raise InputError("EXPORT_OPTIONS_MUST_BE_PAIRED")
         pages = page_numbers(args.render_pages) if args.render_pages is not None else []
-        report = inspect_pdf(args.path, password, checks, args.render_dir, pages)
+        report = inspect_pdf(args.path, checks, args.render_dir, pages)
     except InputError as error:
         report = Report(errors=[str(error)])
     print(json.dumps(asdict(report), ensure_ascii=True))
