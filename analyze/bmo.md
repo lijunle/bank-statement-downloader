@@ -25,7 +25,9 @@ evidence of different routes, not proof of which individual header is mandatory.
 
 Historical payload examples below describe the retained envelope and field names;
 they are not a claim that all product types or historical authentication
-assumptions were revalidated.
+assumptions were revalidated. Identifiers and personal fields use placeholders;
+formatted account numbers, dates, and amounts are synthetic examples, not captured
+customer values.
 
 ## Key Findings
 
@@ -202,8 +204,8 @@ remain explicit session errors.
       "channelType": "OLB",
       "appName": "OLB",
       "hostName": "BDBN-HostName",
-      "clientDate": "2025-11-16T13:16:00.699",
-      "rqUID": "REQ_82a79f76e1f65220",
+      "clientDate": "2000-01-01T00:00:00.000",
+      "rqUID": "REQ_0000000000000001",
       "clientSessionID": "session-id",
       "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
       "clientIP": "127.0.0.1",
@@ -223,22 +225,22 @@ remain explicit session errors.
   "GetMySummaryRs": {
     "HdrRs": {
       "callStatus": "Success",
-      "hostName": "colctddtqsdps02",
-      "serverDate": "2025-11-16T08:16:00.668",
-      "rqUID": "REQ_82a79f76e1f65220",
+      "hostName": "<server-host>",
+      "serverDate": "2000-01-01T00:00:00.000",
+      "rqUID": "REQ_0000000000000001",
       "mfaDeviceToken": "<mfa-device-token>",
       "mfaDeviceTokenExpire": 365
     },
     "BodyRs": {
-      "credential": "6621301257354012",
-      "firstName": "JOHN",
-      "lastName": "DOE",
+      "credential": "<profile-id>",
+      "firstName": "<first-name>",
+      "lastName": "<last-name>",
       "role": "BDC",
-      "customerName": "JOHN DOE",
+      "customerName": "<first-name> <last-name>",
       "displayClassLimitFlag": "Y",
-      "lastSignInDate": "2025-11-16",
-      "lastSignInTime": "8:11 AM EST",
-      "lastPasswordChangeDate": "1900-01-01",
+      "lastSignInDate": "2000-01-01",
+      "lastSignInTime": "12:00 AM EST",
+      "lastPasswordChangeDate": "2000-01-01",
       "applePayProvisioning": "true",
       "categoryDisplayOption": "",
       "categories": [
@@ -247,7 +249,7 @@ remain explicit session errors.
           "groupHeadTitle": "Bank Accounts",
           "groupTotal": [
             {
-              "summaryBalance": "2006.99",
+              "summaryBalance": "300.00",
               "currency": "CAD",
               "incompleteBalance": "N"
             }
@@ -256,41 +258,41 @@ remain explicit session errors.
             {
               "accountType": "BANK_ACCOUNT",
               "productName": "Chequing",
-              "ocifAccountName": "Primary Chequing Account",
+              "ocifAccountName": "<account-name-1>",
               "menuOptions": "VIEW_ESTATEMENTS,CHANGE_STATEMENT_OPTION",
-              "accountNumber": "0895 4905-784",
+              "accountNumber": "0000 0001-234",
               "currency": "CAD",
               "accountIndex": 0,
-              "asOfDate": "2025-11-17",
-              "accountBalance": "2006.98",
-              "availableAmount": "2006.98",
+              "asOfDate": "2000-01-01",
+              "accountBalance": "100.00",
+              "availableAmount": "100.00",
               "jumpSiteIndicator": {
                 "index": 0,
                 "name": "NONE",
                 "code": "NONE"
               },
               "isFromAm": false,
-              "ocifShortName": "QDBQBM2",
+              "ocifShortName": "<account-short-name-1>",
               "locPlasticCard": false
             },
             {
               "accountType": "BANK_ACCOUNT",
               "productName": "Savings",
-              "ocifAccountName": "Savings Amplifier Account",
+              "ocifAccountName": "<account-name-2>",
               "menuOptions": "VIEW_ESTATEMENTS,CHANGE_STATEMENT_OPTION",
-              "accountNumber": "0895 9982-100",
+              "accountNumber": "0000 0005-678",
               "currency": "CAD",
               "accountIndex": 1,
-              "asOfDate": "2025-11-17",
-              "accountBalance": "0.01",
-              "availableAmount": "0.01",
+              "asOfDate": "2000-01-01",
+              "accountBalance": "200.00",
+              "availableAmount": "200.00",
               "jumpSiteIndicator": {
                 "index": 0,
                 "name": "NONE",
                 "code": "NONE"
               },
               "isFromAm": false,
-              "ocifShortName": "IT4QBM3",
+              "ocifShortName": "<account-short-name-2>",
               "locPlasticCard": false
             }
           ]
@@ -316,7 +318,7 @@ remain explicit session errors.
         "channelType": "OLB",
         "deviceType": "web",
         "cardType": "FBCP",
-        "successfulLoginDateTime": "Sun Nov 16 08:11:21 EST 2025"
+        "successfulLoginDateTime": "Sat Jan 01 00:00:00 EST 2000"
       },
       "ownerInd": "",
       "showSSOSetupBanner": false,
@@ -376,8 +378,8 @@ here as in the summary request, not just the historical cookie/UI headers.
       "channelType": "OLB",
       "appName": "OLB",
       "hostName": "BDBN-HostName",
-      "clientDate": "2025-11-16T13:15:42.620",
-      "rqUID": "REQ_gd114g8a35785dbd",
+      "clientDate": "2000-01-01T00:00:00.000",
+      "rqUID": "REQ_0000000000000002",
       "clientSessionID": "session-id",
       "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
       "clientIP": "127.0.0.1",
@@ -398,9 +400,9 @@ here as in the summary request, not just the historical cookie/UI headers.
   "GetEStatementsEncryptedDataRs": {
     "HdrRs": {
       "callStatus": "Success",
-      "hostName": "colctddtqsdps02",
-      "serverDate": "2025-11-16T08:15:42.601",
-      "rqUID": "REQ_gd114g8a35785dbd",
+      "hostName": "<server-host>",
+      "serverDate": "2000-01-01T00:00:00.000",
+      "rqUID": "REQ_0000000000000002",
       "mfaDeviceToken": "<mfa-device-token>",
       "mfaDeviceTokenExpire": 365
     },
@@ -410,7 +412,7 @@ here as in the summary request, not just the historical cookie/UI headers.
       "isAnnualStatement": "N",
       "mainAccount": {
         "name": "Chequing",
-        "number": "0895 4905-784"
+        "number": "0000 0001-234"
       },
       "memberAccountsList": [],
       "ecryptedData": "<statement-list-reference>"
@@ -462,19 +464,19 @@ User-Agent: Mozilla/5.0 ...
 {
   "eDocuments": [
     {
-      "date": "2025-10-17",
+      "date": "2000-03-31",
       "dummyParams": "<document-reference-1>",
       "token": "<document-token>",
       "econfirmation": "false"
     },
     {
-      "date": "2025-09-18",
+      "date": "2000-02-29",
       "dummyParams": "<document-reference-2>",
       "token": "<document-token>",
       "econfirmation": "false"
     },
     {
-      "date": "2025-08-18",
+      "date": "2000-01-31",
       "dummyParams": "<document-reference-3>",
       "token": "<document-token>",
       "econfirmation": "false"
@@ -556,7 +558,7 @@ User-Agent: Mozilla/5.0 ...
 
 - **Status**: `200 OK`
 - **Content-Type**: `application/pdf`
-- **Content-Disposition**: `attachment; filename=eStatement_2025-10-17.pdf`
+- **Content-Disposition**: `attachment; filename=eStatement_2000-03-31.pdf`
 - **Body**: Binary PDF file data
 
 **Key Points**:

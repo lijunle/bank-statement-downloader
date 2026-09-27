@@ -317,7 +317,7 @@ export async function getAccounts(profile) {
             // Only include accounts that support eStatements
             if (product.menuOptions?.includes('VIEW_ESTATEMENTS')) {
                 const accountNumber = product.accountNumber || '';
-                // Extract last 4 digits from account number (format: "0784 3894-673")
+                // Extract last 4 digits from account number (synthetic format: "0000 0001-234")
                 // Remove all non-digit characters and get last 4 digits
                 const accountMask = accountNumber.replace(/\D/g, '').slice(-4);
 

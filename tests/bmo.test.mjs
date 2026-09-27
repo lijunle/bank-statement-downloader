@@ -2,7 +2,7 @@
  * Unit tests for BMO bank statement API implementation
  * Tests cover both checking and savings account functionality
  * 
- * Historical fixtures retain the documented account and statement data shapes.
+ * Fixtures use synthetic values while retaining documented data shapes and formats.
  */
 
 import { describe, it, beforeEach, mock } from 'node:test';
@@ -90,21 +90,21 @@ describe('BMO API', () => {
                 GetMySummaryRs: {
                     HdrRs: {
                         callStatus: 'Success',
-                        hostName: 'bolbsccsbrcor01',
-                        serverDate: '2025-11-12T09:28:25.770',
-                        rqUID: 'REQ_06d8678684c4556d',
-                        mfaDeviceToken: 'QNW7M06fR5MUeN9eLKQ8OTj3s7uOJSm9hHS%2FDtRgDrY%2FUdJvubS5q96K%2BhNh4zMo693ZxUIkE0Znr5wbtCuv8jzHz4QR%3D%3D',
+                        hostName: 'synthetic-host',
+                        serverDate: '2000-01-01T00:00:00.000',
+                        rqUID: 'REQ_0000000000000001',
+                        mfaDeviceToken: 'synthetic-mfa-token',
                         mfaDeviceTokenExpire: 365,
                     },
                     BodyRs: {
-                        credential: '6621301257354012',
-                        firstName: 'JOHN',
-                        lastName: 'DOE',
-                        customerName: 'JOHN DOE',
+                        credential: 'test-profile',
+                        firstName: 'TEST',
+                        lastName: 'USER',
+                        customerName: 'TEST USER',
                         role: 'BDC',
                         displayClassLimitFlag: 'Y',
-                        lastSignInDate: '2025-11-16',
-                        lastSignInTime: '9:13 AM EST',
+                        lastSignInDate: '2000-01-01',
+                        lastSignInTime: '12:00 AM EST',
                         categories: [],
                     },
                 },
@@ -121,8 +121,8 @@ describe('BMO API', () => {
 
             assert.deepStrictEqual(profile, {
                 sessionId: 'test-session-id',
-                profileId: '6621301257354012',
-                profileName: 'JOHN DOE',
+                profileId: 'test-profile',
+                profileName: 'TEST USER',
             });
 
             const calls = mockFetch.mock.calls;
@@ -144,9 +144,9 @@ describe('BMO API', () => {
                 GetMySummaryRs: {
                     HdrRs: { callStatus: 'Success' },
                     BodyRs: {
-                        credential: '1234567890',
-                        firstName: 'John',
-                        lastName: 'Doe',
+                        credential: 'test-profile',
+                        firstName: 'Test',
+                        lastName: 'User',
                         categories: [],
                     },
                 },
@@ -160,7 +160,7 @@ describe('BMO API', () => {
             );
 
             const profile = await getProfile('test-session');
-            assert.strictEqual(profile.profileName, 'John Doe');
+            assert.strictEqual(profile.profileName, 'Test User');
         });
 
         it('should throw error when API call fails', async () => {
@@ -193,10 +193,10 @@ describe('BMO API', () => {
                 GetMySummaryRs: {
                     HdrRs: { callStatus: 'Success' },
                     BodyRs: {
-                        credential: '6621301257354012',
-                        firstName: 'JOHN',
-                        lastName: 'DOE',
-                        customerName: 'JOHN DOE',
+                        credential: 'test-profile',
+                        firstName: 'TEST',
+                        lastName: 'USER',
+                        customerName: 'TEST USER',
                         categories: [
                             {
                                 categoryName: 'BA',
@@ -205,18 +205,18 @@ describe('BMO API', () => {
                                     {
                                         accountType: 'BANK_ACCOUNT',
                                         productName: 'Chequing',
-                                        ocifAccountName: 'Primary Chequing Account',
+                                        ocifAccountName: 'Synthetic Checking Account',
                                         menuOptions: 'VIEW_ESTATEMENTS,CHANGE_STATEMENT_OPTION',
-                                        accountNumber: '1895 4905-784',
+                                        accountNumber: '0000 0001-234',
                                         currency: 'CAD',
                                         accountIndex: 0,
                                     },
                                     {
                                         accountType: 'BANK_ACCOUNT',
                                         productName: 'Savings',
-                                        ocifAccountName: 'Savings Amplifier Account',
+                                        ocifAccountName: 'Synthetic Savings Account',
                                         menuOptions: 'VIEW_ESTATEMENTS,CHANGE_STATEMENT_OPTION',
-                                        accountNumber: '1895 9982-110',
+                                        accountNumber: '0000 0005-678',
                                         currency: 'CAD',
                                         accountIndex: 1,
                                     },
@@ -247,7 +247,7 @@ describe('BMO API', () => {
                 profile: mockProfile,
                 accountId: 'BA:0',
                 accountName: 'Chequing',
-                accountMask: '5784',
+                accountMask: '1234',
                 accountType: 'Checking',
             });
 
@@ -255,7 +255,7 @@ describe('BMO API', () => {
                 profile: mockProfile,
                 accountId: 'BA:1',
                 accountName: 'Savings',
-                accountMask: '2110',
+                accountMask: '5678',
                 accountType: 'Savings',
             });
         });
@@ -265,7 +265,7 @@ describe('BMO API', () => {
                 GetMySummaryRs: {
                     HdrRs: { callStatus: 'Success' },
                     BodyRs: {
-                        credential: '6621301257354012',
+                        credential: 'test-profile',
                         categories: [
                             {
                                 categoryName: 'BA',
@@ -273,7 +273,7 @@ describe('BMO API', () => {
                                     {
                                         productName: 'Chequing',
                                         menuOptions: 'SOME_OTHER_OPTION',
-                                        accountNumber: '1895 4905-784',
+                                        accountNumber: '0000 0001-234',
                                         accountIndex: 0,
                                     },
                                 ],
@@ -380,7 +380,7 @@ describe('BMO API', () => {
             profile: { sessionId: 'test', profileId: 'test', profileName: 'Test' },
             accountId: 'BA:0',
             accountName: 'Chequing',
-            accountMask: '4673',
+            accountMask: '1234',
             accountType: 'Checking',
         };
 
@@ -394,9 +394,9 @@ describe('BMO API', () => {
                         isAnnualStatement: 'N',
                         mainAccount: {
                             name: 'Chequing',
-                            number: '1895 4905-784',
+                            number: '0000 0001-234',
                         },
-                        ecryptedData: 'e768f838a7dga40663d40e87c3b4c35619c501ec1941dgc0ge1d1279997564d78c683133b8fbd1673d3195d0g4cc83766g92f3f4b67306d611fa03e02df9b43cgc4fc6d4996177c5c374733ef27f11ef99',
+                        ecryptedData: 'synthetic-list-reference',
                     },
                 },
             };
@@ -404,21 +404,21 @@ describe('BMO API', () => {
             const mockStatementListResponse = {
                 eDocuments: [
                     {
-                        date: '2025-10-17',
-                        dummyParams: '2ff7b03b-b4de-5b8e-0gf2-ff8cbfc4ecc0',
-                        token: '213382603570921',
+                        date: '2000-03-31',
+                        dummyParams: 'synthetic-document-1',
+                        token: 'synthetic-document-token',
                         econfirmation: 'false',
                     },
                     {
-                        date: '2025-09-18',
-                        dummyParams: 'ee030572-gf50-51d6-b1c2-3747e4g86bg7',
-                        token: '213382603570921',
+                        date: '2000-02-29',
+                        dummyParams: 'synthetic-document-2',
+                        token: 'synthetic-document-token',
                         econfirmation: 'false',
                     },
                     {
-                        date: '2025-08-18',
-                        dummyParams: 'e261ccdb-1844-5330-9203-9415becde69d2',
-                        token: '213382603570921',
+                        date: '2000-01-31',
+                        dummyParams: 'synthetic-document-3',
+                        token: 'synthetic-document-token',
                         econfirmation: 'false',
                     },
                 ],
@@ -444,11 +444,11 @@ describe('BMO API', () => {
 
             assert.strictEqual(statements.length, 3);
             assert.strictEqual(statements[0].account, mockAccount);
-            assert.strictEqual(statements[0].statementDate, new Date('2025-10-17').toISOString());
+            assert.strictEqual(statements[0].statementDate, new Date('2000-03-31').toISOString());
 
             const parsedId = JSON.parse(statements[0].statementId);
-            assert.strictEqual(parsedId.dummyParams, '2ff7b03b-b4de-5b8e-0gf2-ff8cbfc4ecc0');
-            assert.strictEqual(parsedId.token, '213382603570921');
+            assert.strictEqual(parsedId.dummyParams, 'synthetic-document-1');
+            assert.strictEqual(parsedId.token, 'synthetic-document-token');
 
             // Verify API calls
             const calls = mockFetch.mock.calls;
@@ -471,7 +471,7 @@ describe('BMO API', () => {
                 GetEStatementsEncryptedDataRs: {
                     HdrRs: { callStatus: 'Success' },
                     BodyRs: {
-                        ecryptedData: 'uftu-fodszqufe-ebub',
+                        ecryptedData: 'synthetic-list-reference',
                     },
                 },
             };
@@ -541,6 +541,7 @@ describe('BMO API', () => {
                 ...mockAccount,
                 accountId: 'BA:1',
                 accountName: 'Savings',
+                accountMask: '5678',
                 accountType: 'Savings',
             };
 
@@ -548,7 +549,7 @@ describe('BMO API', () => {
                 GetEStatementsEncryptedDataRs: {
                     HdrRs: { callStatus: 'Success' },
                     BodyRs: {
-                        ecryptedData: 'uftu-fodszqufe-ebub-tbwjoht',
+                        ecryptedData: 'synthetic-savings-list-reference',
                     },
                 },
             };
@@ -556,9 +557,9 @@ describe('BMO API', () => {
             const mockStatementListResponse = {
                 eDocuments: [
                     {
-                        date: '2025-10-17',
-                        dummyParams: 'savings-statement-id',
-                        token: '123456',
+                        date: '2000-03-31',
+                        dummyParams: 'synthetic-savings-document',
+                        token: 'synthetic-savings-token',
                         econfirmation: 'false',
                     },
                 ],
@@ -596,17 +597,17 @@ describe('BMO API', () => {
             profile: { sessionId: 'test', profileId: 'test', profileName: 'Test' },
             accountId: 'BA:0',
             accountName: 'Chequing',
-            accountMask: '5784',
+            accountMask: '1234',
             accountType: 'Checking',
         };
 
         const mockStatement = {
             account: mockAccount,
             statementId: JSON.stringify({
-                dummyParams: '2ff7b03b-b4de-5b8e-0gf2-ff8cbfc4ecc0',
-                token: '213382603570921',
+                dummyParams: 'synthetic-document-1',
+                token: 'synthetic-document-token',
             }),
-            statementDate: new Date('2025-10-17'),
+            statementDate: new Date('2000-03-31'),
         };
 
         it('should download statement PDF', async () => {
@@ -628,8 +629,8 @@ describe('BMO API', () => {
             const calls = mockFetch.mock.calls;
             assert.strictEqual(calls.length, 1);
             assert.ok(calls[0].arguments[0].includes('/api/cdb/document-services/WebContentManager/DownloadEStatementInPDFBOSServlet'));
-            assert.ok(calls[0].arguments[0].includes('dummyParams=2ff7b03b-b4de-5b8e-0gf2-ff8cbfc4ecc0'));
-            assert.ok(calls[0].arguments[0].includes('token=213382603570921'));
+            assert.ok(calls[0].arguments[0].includes('dummyParams=synthetic-document-1'));
+            assert.ok(calls[0].arguments[0].includes('token=synthetic-document-token'));
             assert.ok(calls[0].arguments[0].includes('econfirmation=false'));
             assert.strictEqual(calls[0].arguments[1].method, 'GET');
             assert.strictEqual(calls[0].arguments[1].headers['Accept'], 'application/pdf');
@@ -909,7 +910,7 @@ describe('BMO existing page token interface', () => {
         const blob = await bmo.downloadStatement({
             account: { accountId: 'BA:0' },
             statementId: JSON.stringify({ dummyParams: 'test+reference', token: 'test/token' }),
-            statementDate: '2026-06-18T00:00:00.000Z',
+            statementDate: '2000-03-31T00:00:00.000Z',
         });
         assert.equal(blob.type, 'application/pdf');
         assert.equal(requests, 0);
@@ -929,7 +930,7 @@ describe('BMO existing page token interface', () => {
             await assert.rejects(bmo.downloadStatement({
                 account: { accountId: 'BA:0' },
                 statementId: JSON.stringify({ dummyParams: 'synthetic-document', token: 'synthetic-token' }),
-                statementDate: '2026-06-18T00:00:00.000Z',
+                statementDate: '2000-03-31T00:00:00.000Z',
             }), /BMO did not return a PDF statement/);
         }
     });
