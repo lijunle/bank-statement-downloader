@@ -356,6 +356,9 @@ from the selected product's summary category and account index. It returns HTTP
 `isConsolidated: "N"`, an empty `memberAccountsList`, and an opaque `ecryptedData`
 string. Treat the historical `/banking/services/estatements/` route as superseded.
 
+**Request authentication**: The bank-owned access token and DPoP proof are used
+here as in the summary request, not just the historical cookie/UI headers.
+
 **Request Parameters**:
 
 - `EStatementsEncryptedDataRq.HdrRq`: Standard header (same structure as API #1)
@@ -444,9 +447,11 @@ string. Treat the historical `/banking/services/estatements/` route as supersede
 GET https://www1.bmo.com/api/cdb/document-services/WebContentManager/getEDocumentsJSONList?encrypted_data=<statement-list-reference>
 ```
 
-**Request Headers**:
+**Observed Request Headers** (not a proven minimal set):
 
 ```
+Authorization: dpop <access-token>
+DPoP: <signed-proof>
 Cookie: JSESSIONID={session-id}; XSRF-TOKEN={token}; APIC-XSRF-TOKEN={token}; ...
 User-Agent: Mozilla/5.0 ...
 ```
@@ -592,9 +597,11 @@ extension does not implement refresh or relogin; those remain bank-page operatio
 
 Use the bank's existing token-sharing events from the normal BMO content-script
 module. Obtain the current token for each JSON request and create the observed
-DPoP proof using the browser's existing non-exportable key. The extension must not
-perform its own refresh-token exchange, change the bank's session storage, install
-a main-world helper, or intercept the bank's network requests.
+DPoP proof using the browser's existing non-exportable key. Bound the IndexedDB
+lookup so blocked storage does not leave authentication pending, and verify the
+session again after signing, immediately before sending the request. The extension
+must not perform its own refresh-token exchange, change the bank's session storage,
+install a main-world helper, or intercept the bank's network requests.
 
 Only the access token is needed from the event response; do not persist or report
 either token. Missing event responses and rejected authenticated requests must

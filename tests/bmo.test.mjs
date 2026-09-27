@@ -787,6 +787,83 @@ describe('BMO existing page token interface', () => {
         assert.equal(fetchMock.mock.calls.length, 0);
     });
 
+    it('detects bank session changes during asynchronous proof signing', async t => {
+        const sign = crypto.subtle.sign.bind(crypto.subtle);
+        t.mock.method(crypto.subtle, 'sign', async (...args) => {
+            document.cookie = 'XSRF-TOKEN=different-session';
+            return sign(...args);
+        });
+        await assert.rejects(bmo.getProfile('session'), /session changed during authentication/);
+        assert.equal(fetchMock.mock.calls.length, 0);
+    });
+
+    for (const blocked of [false, true]) {
+        it(`rejects a ${blocked ? 'blocked' : 'stalled'} signing-key database and closes late connections`, async t => {
+            t.mock.timers.enable({ apis: ['setTimeout'] });
+            const transaction = mock.fn();
+            const request = { result: { close: closeDb, transaction } };
+            indexedDB.open = () => request;
+            let outcome = 'pending';
+            const operation = bmo.getProfile('session').then(
+                () => { outcome = 'resolved'; },
+                error => { outcome = error.message; },
+            );
+            await new Promise(resolve => setImmediate(resolve));
+            if (blocked) {
+                request.onblocked?.();
+            } else {
+                t.mock.timers.tick(4999);
+                await new Promise(resolve => setImmediate(resolve));
+                assert.equal(outcome, 'pending');
+                t.mock.timers.tick(1);
+            }
+            await new Promise(resolve => setImmediate(resolve));
+            assert.match(outcome, blocked ? /signing-key database is blocked/ : /signing-key database.*timed out/);
+            await operation;
+            request.onsuccess();
+            await new Promise(resolve => setImmediate(resolve));
+            assert.equal(closeDb.mock.calls.length, 1);
+            assert.equal(transaction.mock.calls.length, 0);
+            assert.equal(fetchMock.mock.calls.length, 0);
+        });
+    }
+
+    it('times out a stalled key read and ignores its late result', async t => {
+        t.mock.timers.enable({ apis: ['setTimeout'] });
+        const read = { result: keyRecord, readyState: 'pending' };
+        const abortRead = mock.fn();
+        indexedDB.open = () => {
+            const request = {};
+            queueMicrotask(() => {
+                request.result = {
+                    objectStoreNames: { contains: () => true },
+                    close: closeDb,
+                    transaction: () => ({
+                        objectStore: () => ({ get: () => read }),
+                        abort: abortRead,
+                    }),
+                };
+                request.onsuccess();
+            });
+            return request;
+        };
+        let outcome = 'pending';
+        const operation = bmo.getProfile('session').then(
+            () => { outcome = 'resolved'; },
+            error => { outcome = error.message; },
+        );
+        await new Promise(resolve => setImmediate(resolve));
+        t.mock.timers.tick(5000);
+        await new Promise(resolve => setImmediate(resolve));
+        assert.match(outcome, /signing-key read timed out/);
+        await operation;
+        assert.equal(abortRead.mock.calls.length, 1);
+        assert.equal(closeDb.mock.calls.length, 1);
+        read.onsuccess();
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(fetchMock.mock.calls.length, 0);
+    });
+
     it('cleans up the response listener on timeout and dispatch errors', async t => {
         t.mock.timers.enable({ apis: ['setTimeout'] });
         const listeners = new Set();

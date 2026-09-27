@@ -55,18 +55,45 @@ function getAccessToken() {
 async function getSigningKey(userId) {
     const db = await new Promise(/** @param {(db: IDBDatabase) => void} resolve */ (resolve, reject) => {
         const request = indexedDB.open('biometric-plugin');
+        let abandoned = false;
+        const timer = setTimeout(() => fail('BMO signing-key database lookup timed out. Reload the bank page.'), 5000);
+        /** @param {string} message */
+        function fail(message) {
+            abandoned = true;
+            clearTimeout(timer);
+            reject(new Error(message));
+        }
         request.onupgradeneeded = () => request.transaction?.abort();
-        request.onerror = () => reject(new Error('BMO signing-key database is unavailable.'));
-        request.onsuccess = () => resolve(request.result);
+        request.onblocked = () => fail('BMO signing-key database is blocked. Reload the bank page.');
+        request.onerror = () => fail('BMO signing-key database is unavailable.');
+        request.onsuccess = () => {
+            clearTimeout(timer);
+            if (abandoned) {
+                request.result.close();
+            } else {
+                resolve(request.result);
+            }
+        };
     });
     try {
         if (!db.objectStoreNames.contains('dpop-keys')) {
             throw new Error('BMO signing-key store is unavailable.');
         }
         const key = await new Promise((resolve, reject) => {
-            const request = db.transaction('dpop-keys', 'readonly').objectStore('dpop-keys').get(userId);
-            request.onerror = () => reject(new Error('Could not read the BMO signing key.'));
-            request.onsuccess = () => resolve(request.result);
+            const transaction = db.transaction('dpop-keys', 'readonly');
+            const request = transaction.objectStore('dpop-keys').get(userId);
+            const timer = setTimeout(() => {
+                reject(new Error('BMO signing-key read timed out. Reload the bank page.'));
+                if (request.readyState === 'pending') transaction.abort();
+            }, 5000);
+            request.onerror = () => {
+                clearTimeout(timer);
+                reject(new Error('Could not read the BMO signing key.'));
+            };
+            request.onsuccess = () => {
+                clearTimeout(timer);
+                resolve(request.result);
+            };
         });
         if (!key?.jwk || !(key.privateKey instanceof CryptoKey) ||
             key.privateKey.algorithm.name !== 'RSA-PSS' || !key.privateKey.usages.includes('sign')) {
@@ -109,11 +136,7 @@ async function getAuthentication() {
     const context = sessionContext();
     const accessToken = await getAccessToken();
     const key = await getSigningKey(context.userId);
-    const current = sessionContext();
-    if (context.userId !== current.userId || context.sessionId !== current.sessionId) {
-        throw new Error('BMO session changed during authentication. Reload the bank page.');
-    }
-    return { accessToken, key };
+    return { context, accessToken, key };
 }
 
 /**
@@ -126,6 +149,10 @@ async function authenticatedJson(url, options) {
     const headers = new Headers(options.headers);
     headers.set('Authorization', `dpop ${auth.accessToken}`);
     headers.set('DPoP', await createProof(new URL(url).pathname, options.method || 'GET', auth.key, auth.accessToken));
+    const current = sessionContext();
+    if (auth.context.userId !== current.userId || auth.context.sessionId !== current.sessionId) {
+        throw new Error('BMO session changed during authentication. Reload the bank page.');
+    }
     const response = await fetch(url, { ...options, headers, credentials: 'include' });
     if (!response.ok) {
         throw new Error(`BMO API request failed: HTTP ${response.status}.`);
