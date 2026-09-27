@@ -2,8 +2,7 @@
  * Unit tests for BMO bank statement API implementation
  * Tests cover both checking and savings account functionality
  * 
- * Note: All mock data is based on actual content extracted from
- * analyze/bmo.har to ensure tests match real API responses.
+ * Historical fixtures retain the documented account and statement data shapes.
  */
 
 import { describe, it, beforeEach, mock } from 'node:test';
@@ -11,7 +10,11 @@ import assert from 'node:assert/strict';
 
 // Mock global fetch
 const mockFetch = mock.fn();
-global.fetch = mockFetch;
+const signingKeys = await crypto.subtle.generateKey({
+    name: 'RSA-PSS', modulusLength: 2048,
+    publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256',
+}, false, ['sign', 'verify']);
+const publicKey = await crypto.subtle.exportKey('jwk', signingKeys.publicKey);
 
 // Mock document.cookie for getSessionId
 global.document = {
@@ -25,6 +28,38 @@ const { bankId, getSessionId, getProfile, getAccounts, getStatements, downloadSt
 describe('BMO API', () => {
     beforeEach(() => {
         mockFetch.mock.resetCalls();
+        const events = new EventTarget();
+        events.addEventListener('TRANSMIT_CLIENT_ACCESS_TOKEN_REQUEST', () => {
+            events.dispatchEvent(new CustomEvent('TRANSMIT_CLIENT_ACCESS_TOKEN_RESPONSE', {
+                detail: { action: 'response', accessToken: 'synthetic-access' },
+            }));
+        });
+        global.window = events;
+        global.localStorage = {
+            getItem: key => key === 'dpopUserId' ? '"synthetic-user"' : null,
+        };
+        global.indexedDB = {
+            open: () => {
+                const request = {};
+                queueMicrotask(() => {
+                    request.result = {
+                        objectStoreNames: { contains: name => name === 'dpop-keys' },
+                        close() {},
+                        transaction: () => ({ objectStore: () => ({ get: () => {
+                            const record = {};
+                            queueMicrotask(() => {
+                                record.result = { jwk: publicKey, privateKey: signingKeys.privateKey };
+                                record.onsuccess();
+                            });
+                            return record;
+                        } }) }),
+                    };
+                    request.onsuccess();
+                });
+                return request;
+            },
+        };
+        global.fetch = mockFetch;
     });
 
     describe('bankId', () => {
@@ -92,14 +127,15 @@ describe('BMO API', () => {
 
             const calls = mockFetch.mock.calls;
             assert.strictEqual(calls.length, 1);
-            assert.strictEqual(calls[0].arguments[0], 'https://www1.bmo.com/banking/services/mysummary/getMySummary');
+            assert.strictEqual(calls[0].arguments[0], 'https://www1.bmo.com/api/cdb/customer-product-and-service-directory/mysummary/getMySummary');
             assert.strictEqual(calls[0].arguments[1].method, 'POST');
-            assert.strictEqual(calls[0].arguments[1].headers['Content-Type'], 'application/json');
-            assert.strictEqual(calls[0].arguments[1].headers['X-ChannelType'], 'OLB');
+            assert.strictEqual(calls[0].arguments[1].headers.get('Content-Type'), 'application/json');
+            assert.strictEqual(calls[0].arguments[1].headers.get('X-ChannelType'), 'OLB');
 
             const body = JSON.parse(calls[0].arguments[1].body);
             assert.strictEqual(body.MySummaryRq.HdrRq.ver, '1.0');
             assert.strictEqual(body.MySummaryRq.HdrRq.channelType, 'OLB');
+            assert.equal(body.MySummaryRq.HdrRq.rqUID, calls[0].arguments[1].headers.get('X-Request-ID'));
             assert.strictEqual(body.MySummaryRq.BodyRq.refreshProfile, 'N');
         });
 
@@ -419,14 +455,14 @@ describe('BMO API', () => {
             assert.strictEqual(calls.length, 2);
 
             // First call: getEStatementsEncryptedData
-            assert.strictEqual(calls[0].arguments[0], 'https://www1.bmo.com/banking/services/estatements/getEStatementsEncryptedData');
+            assert.strictEqual(calls[0].arguments[0], 'https://www1.bmo.com/api/cdb/document-services/estatements/getEStatementsEncryptedData');
             assert.strictEqual(calls[0].arguments[1].method, 'POST');
             const body1 = JSON.parse(calls[0].arguments[1].body);
             assert.strictEqual(body1.EStatementsEncryptedDataRq.BodyRq.acctType, 'BA');
             assert.strictEqual(body1.EStatementsEncryptedDataRq.BodyRq.inquiryAccountIndex, 0);
 
             // Second call: getEDocumentsJSONList
-            assert.ok(calls[1].arguments[0].includes('/WebContentManager/getEDocumentsJSONList?encrypted_data='));
+            assert.ok(calls[1].arguments[0].includes('/api/cdb/document-services/WebContentManager/getEDocumentsJSONList?encrypted_data='));
             assert.strictEqual(calls[1].arguments[1].method, 'GET');
         });
 
@@ -574,7 +610,7 @@ describe('BMO API', () => {
         };
 
         it('should download statement PDF', async () => {
-            const mockPdfBlob = new Blob(['PDF content'], { type: 'application/pdf' });
+            const mockPdfBlob = new Blob(['%PDF-1.7\nsynthetic document'], { type: 'application/pdf' });
 
             mockFetch.mock.mockImplementationOnce(() =>
                 Promise.resolve({
@@ -591,12 +627,15 @@ describe('BMO API', () => {
             // Verify download API call
             const calls = mockFetch.mock.calls;
             assert.strictEqual(calls.length, 1);
-            assert.ok(calls[0].arguments[0].includes('/WebContentManager/DownloadEStatementInPDFBOSServlet'));
+            assert.ok(calls[0].arguments[0].includes('/api/cdb/document-services/WebContentManager/DownloadEStatementInPDFBOSServlet'));
             assert.ok(calls[0].arguments[0].includes('dummyParams=2ff7b03b-b4de-5b8e-0gf2-ff8cbfc4ecc0'));
             assert.ok(calls[0].arguments[0].includes('token=213382603570921'));
             assert.ok(calls[0].arguments[0].includes('econfirmation=false'));
             assert.strictEqual(calls[0].arguments[1].method, 'GET');
             assert.strictEqual(calls[0].arguments[1].headers['Accept'], 'application/pdf');
+            assert.equal(calls[0].arguments[1].credentials, 'include');
+            assert.equal(calls[0].arguments[1].headers.Authorization, undefined);
+            assert.equal(calls[0].arguments[1].headers.DPoP, undefined);
         });
 
         it('should throw error when download fails', async () => {
@@ -622,7 +661,7 @@ describe('BMO API', () => {
                 })
             );
 
-            await assert.rejects(getProfile('test-session'), /API request failed: 401 Unauthorized/);
+            await assert.rejects(getProfile('test-session'), /BMO API request failed: HTTP 401/);
         });
 
         it('should handle network errors', async () => {

@@ -4,6 +4,135 @@ export const bankId = 'bmo';
 /** @type {string} */
 export const bankName = 'BMO';
 
+function sessionContext() {
+    let userId;
+    try {
+        userId = JSON.parse(localStorage.getItem('dpopUserId') || 'null');
+    } catch {
+        throw new Error('Invalid BMO session configuration. Reload the bank page.');
+    }
+    if (typeof userId !== 'string' || !userId) {
+        throw new Error('BMO session configuration not found. Sign in on the bank page.');
+    }
+    return { userId, sessionId: getSessionId() };
+}
+
+/** @returns {Promise<string>} */
+function getAccessToken() {
+    return new Promise((resolve, reject) => {
+        const responseEvent = 'TRANSMIT_CLIENT_ACCESS_TOKEN_RESPONSE';
+        const timer = setTimeout(() => {
+            window.removeEventListener(responseEvent, receive);
+            reject(new Error('BMO token request timed out. Reload the bank page and sign in.'));
+        }, 5000);
+        /** @param {Event} event */
+        function receive(event) {
+            const detail = /** @type {CustomEvent} */ (event).detail;
+            if (detail?.action !== 'response') return;
+            clearTimeout(timer);
+            window.removeEventListener(responseEvent, receive);
+            if (typeof detail.accessToken !== 'string' || !detail.accessToken) {
+                reject(new Error('BMO access token is unavailable. Reload the bank page and sign in.'));
+            } else {
+                resolve(detail.accessToken);
+            }
+        }
+        window.addEventListener(responseEvent, receive);
+        try {
+            window.dispatchEvent(new Event('TRANSMIT_CLIENT_ACCESS_TOKEN_REQUEST'));
+        } catch {
+            clearTimeout(timer);
+            window.removeEventListener(responseEvent, receive);
+            reject(new Error('Could not request the BMO page access token.'));
+        }
+    });
+}
+
+/**
+ * @param {string} userId
+ * @returns {Promise<{jwk: JsonWebKey, privateKey: CryptoKey}>}
+ */
+async function getSigningKey(userId) {
+    const db = await new Promise(/** @param {(db: IDBDatabase) => void} resolve */ (resolve, reject) => {
+        const request = indexedDB.open('biometric-plugin');
+        request.onupgradeneeded = () => request.transaction?.abort();
+        request.onerror = () => reject(new Error('BMO signing-key database is unavailable.'));
+        request.onsuccess = () => resolve(request.result);
+    });
+    try {
+        if (!db.objectStoreNames.contains('dpop-keys')) {
+            throw new Error('BMO signing-key store is unavailable.');
+        }
+        const key = await new Promise((resolve, reject) => {
+            const request = db.transaction('dpop-keys', 'readonly').objectStore('dpop-keys').get(userId);
+            request.onerror = () => reject(new Error('Could not read the BMO signing key.'));
+            request.onsuccess = () => resolve(request.result);
+        });
+        if (!key?.jwk || !(key.privateKey instanceof CryptoKey) ||
+            key.privateKey.algorithm.name !== 'RSA-PSS' || !key.privateKey.usages.includes('sign')) {
+            throw new Error('BMO signing key is unavailable or unsupported.');
+        }
+        return key;
+    } finally {
+        db.close();
+    }
+}
+
+/** @param {Uint8Array} bytes */
+function base64url(bytes) {
+    return btoa(Array.from(bytes, byte => String.fromCharCode(byte)).join(''))
+        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/**
+ * @param {string} target
+ * @param {string} method
+ * @param {{jwk: JsonWebKey, privateKey: CryptoKey}} key
+ * @param {string} [accessToken]
+ */
+async function createProof(target, method, key, accessToken) {
+    /** @type {Record<string, string | number>} */
+    const payload = { htu: target, htm: method, jti: crypto.randomUUID(), iat: Math.floor(Date.now() / 1000) };
+    if (accessToken) {
+        const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(accessToken));
+        payload.ath = base64url(new Uint8Array(hash));
+    }
+    const header = { typ: 'dpop+jwt', alg: 'PS256', jwk: key.jwk };
+    const unsigned = `${base64url(new TextEncoder().encode(JSON.stringify(header)))}.${base64url(new TextEncoder().encode(JSON.stringify(payload)))}`;
+    const signature = await crypto.subtle.sign(
+        { name: 'RSA-PSS', saltLength: 32 }, key.privateKey, new TextEncoder().encode(unsigned),
+    );
+    return `${unsigned}.${base64url(new Uint8Array(signature))}`;
+}
+
+async function getAuthentication() {
+    const context = sessionContext();
+    const accessToken = await getAccessToken();
+    const key = await getSigningKey(context.userId);
+    const current = sessionContext();
+    if (context.userId !== current.userId || context.sessionId !== current.sessionId) {
+        throw new Error('BMO session changed during authentication. Reload the bank page.');
+    }
+    return { accessToken, key };
+}
+
+/**
+ * @param {string} url
+ * @param {RequestInit} options
+ * @returns {Promise<any>}
+ */
+async function authenticatedJson(url, options) {
+    const auth = await getAuthentication();
+    const headers = new Headers(options.headers);
+    headers.set('Authorization', `dpop ${auth.accessToken}`);
+    headers.set('DPoP', await createProof(new URL(url).pathname, options.method || 'GET', auth.key, auth.accessToken));
+    const response = await fetch(url, { ...options, headers, credentials: 'include' });
+    if (!response.ok) {
+        throw new Error(`BMO API request failed: HTTP ${response.status}.`);
+    }
+    return response.json();
+}
+
 /**
  * Helper function to get a cookie value by name
  * @param {string} name - Cookie name
@@ -12,9 +141,9 @@ export const bankName = 'BMO';
 function getCookie(name) {
     const cookies = document.cookie.split(';');
     for (const cookie of cookies) {
-        const [key, value] = cookie.trim().split('=');
+        const [key, ...parts] = cookie.trim().split('=');
         if (key === name) {
-            return decodeURIComponent(value);
+            return decodeURIComponent(parts.join('='));
         }
     }
     return null;
@@ -68,14 +197,14 @@ function createHeaderRequest() {
 async function apiRequest(url, body) {
     const xsrfToken = getCookie('XSRF-TOKEN');
 
-    const response = await fetch(url, {
+    return authenticatedJson(url, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             'Accept': 'application/json, text/plain, */*',
             'X-XSRF-TOKEN': xsrfToken || '',
             'X-ChannelType': 'OLB',
-            'X-Request-ID': generateRequestId(),
+            'X-Request-ID': Object.values(body)[0].HdrRq.rqUID,
             'X-UI-Session-ID': '0.0.1',
             'X-App-Version': 'session-id',
             'X-App-Current-Path': '/banking/digital/accounts',
@@ -84,11 +213,6 @@ async function apiRequest(url, body) {
         body: JSON.stringify(body),
     });
 
-    if (!response.ok) {
-        throw new Error(`API request failed: ${response.status} ${response.statusText}`);
-    }
-
-    return response.json();
 }
 
 /**
@@ -119,7 +243,7 @@ async function getMySummary() {
     };
 
     const response = await apiRequest(
-        'https://www1.bmo.com/banking/services/mysummary/getMySummary',
+        'https://www1.bmo.com/api/cdb/customer-product-and-service-directory/mysummary/getMySummary',
         requestBody
     );
 
@@ -205,7 +329,7 @@ export async function getStatements(account) {
     };
 
     const encryptedDataResponse = await apiRequest(
-        'https://www1.bmo.com/banking/services/estatements/getEStatementsEncryptedData',
+        'https://www1.bmo.com/api/cdb/document-services/estatements/getEStatementsEncryptedData',
         encryptedDataRequest
     );
 
@@ -221,19 +345,14 @@ export async function getStatements(account) {
     }
 
     // Step 2: Get statement list by decrypting the token
-    const statementListUrl = `https://www1.bmo.com/WebContentManager/getEDocumentsJSONList?encrypted_data=${encryptedData}`;
-    const statementListResponse = await fetch(statementListUrl, {
+    const statementListUrl = `https://www1.bmo.com/api/cdb/document-services/WebContentManager/getEDocumentsJSONList?encrypted_data=${encodeURIComponent(encryptedData)}`;
+    const statementData = await authenticatedJson(statementListUrl, {
         method: 'GET',
         headers: {
             'Accept': 'application/json, text/plain, */*',
         },
     });
 
-    if (!statementListResponse.ok) {
-        throw new Error(`Failed to get statement list: ${statementListResponse.status} ${statementListResponse.statusText}`);
-    }
-
-    const statementData = await statementListResponse.json();
     const eDocuments = statementData.eDocuments || [];
 
     return eDocuments.map((/** @type {any} */ doc) => ({
@@ -251,20 +370,26 @@ export async function downloadStatement(statement) {
     // Parse the statementId to get dummyParams and token
     const { dummyParams, token } = JSON.parse(statement.statementId);
 
-    const downloadUrl = `https://www1.bmo.com/WebContentManager/DownloadEStatementInPDFBOSServlet?dummyParams=${encodeURIComponent(dummyParams)}&token=${encodeURIComponent(token)}&econfirmation=false`;
+    const downloadUrl = `https://www1.bmo.com/api/cdb/document-services/WebContentManager/DownloadEStatementInPDFBOSServlet?dummyParams=${encodeURIComponent(dummyParams)}&token=${encodeURIComponent(token)}&econfirmation=false`;
 
     const response = await fetch(downloadUrl, {
         method: 'GET',
         headers: {
             'Accept': 'application/pdf',
         },
+        credentials: 'include',
     });
 
     if (!response.ok) {
         throw new Error(`Failed to download statement: ${response.status} ${response.statusText}`);
     }
 
-    return response.blob();
+    const blob = await response.blob();
+    if (blob.type.split(';')[0].trim().toLowerCase() !== 'application/pdf' ||
+        await blob.slice(0, 5).text() !== '%PDF-') {
+        throw new Error('BMO did not return a PDF statement.');
+    }
+    return blob;
 }
 
 /**
