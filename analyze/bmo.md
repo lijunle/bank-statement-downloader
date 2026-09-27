@@ -1,18 +1,161 @@
 # BMO Canada - Bank Statement API Analysis
 
-**Analysis as of:** 2025-12-03
+**Analysis as of:** 2026-09-25
 
 ## Summary
 
-BMO Canada's online banking platform uses a series of JSON-based POST APIs to retrieve account information, statement lists, and download statements. The APIs follow a consistent request/response pattern with headers for authentication and session management.
+BMO Canada's online banking platform uses JSON POST requests for account summary
+and statement-list references, followed by GET requests for document lists and PDFs.
+The POST APIs retain the `HdrRq` / `BodyRq` and `HdrRs` / `BodyRs` envelopes.
+
+## Scope and evidence
+
+Bank identifier: `bmo`. Current observations come from the authenticated BMO Canada
+website at `https://www1.bmo.com`, using its account overview and the checking and
+savings Statements tabs and PDF links. Both products are eligible for eStatements.
+Credit cards, loans, investments, and consolidated statements have not been
+exercised in this investigation.
+
+Opening the authenticated account overview in the bank UI issued
+`POST /api/cdb/customer-product-and-service-directory/mysummary/getMySummary`,
+returning HTTP 200 and `GetMySummaryRs.HdrRs.callStatus: "Success"`. The existing
+integration's historical `/banking/services/mysummary/getMySummary` returned HTTP
+400 with an Access Denied response in the same authenticated browser. This is
+evidence of different routes, not proof of which individual header is mandatory.
+
+Historical payload examples below describe the retained envelope and field names;
+they are not a claim that all product types or historical authentication
+assumptions were revalidated. Identifiers and personal fields use placeholders;
+formatted account numbers, dates, and amounts are synthetic examples, not captured
+customer values.
 
 ## Key Findings
 
-- **Authentication**: Uses session cookies (`XSRF-TOKEN`, `PMData`) for API authentication
+- **Authentication**: Current summary and statement-list UI requests include browser cookies, `X-XSRF-TOKEN`,
+  `Authorization: dpop <access-token>`, and a `DPoP` proof. Cookie-only authentication
+  is no longer an established description of the observed request.
 - **Base URL**: `https://www1.bmo.com`
-- **API Pattern**: All APIs use POST requests with JSON bodies
+- **API Pattern**: POST for summary/reference requests; GET for document lists/PDFs
 - **Request Format**: Consistent `HdrRq` (header) and `BodyRq` (body) structure
-- **Response Format**: Consistent `HdrRs` (header) and `BodyRs` (body) structure
+- **Response Format**: POST envelopes use `HdrRs` / `BodyRs`; the list GET returns
+  `eDocuments`, and the download GET returns PDF bytes.
+
+## Authentication observations and open questions
+
+- The current bank requests carry `authorization`, `dpop`,
+  `x-bmo-user-session-id`, `x-bmo-device-fingerprint`, and
+  `x-bmo-mfa-device-token`, in addition to the historical UI and XSRF headers.
+  Their presence alone does not establish necessity. No header-removal experiment
+  has established a minimal accepted request.
+- A single read-only diagnostic request to the observed new summary endpoint used
+  the historical JSON body and XSRF/UI headers with browser cookies, but no
+  `Authorization` or `DPoP`. It returned HTTP 401 with
+  `{"httpCode":"401","httpMessage":"Unauthorized","moreInformation":"<diagnostic>"}`.
+  A subsequent normal bank-UI overview request returned HTTP 200 and displayed
+  the accounts. Thus a path-only change is insufficient for that exercised
+  request; this does not isolate which additional headers are required.
+- The decoded proof metadata identifies `typ: "dpop+jwt"` and `alg: "PS256"`,
+  with a public `jwk`. Claims include `htu`, `htm`, `jti`, `iat`, and `ath`.
+  The observed statement POST and list GET use a relative API pathname for `htu`,
+  without the query string. No live proof, token, or public/private key material
+  is retained here.
+- `sessionStorage.sessionTokens` has access/refresh/ID-token field names and expiry
+  metadata. Its `accessToken` value was empty in the inspected page. The bank's
+  public application code stores the access token on an in-memory service property
+  while writing an empty access-token field to session storage.
+- The bank's public web signing implementation reads `biometric-plugin` IndexedDB,
+  store `dpop-keys`, keyed by `userId`. The active record corresponds to the
+  JSON-decoded `localStorage.dpopUserId`. It contains a public JWK and a
+  non-exportable signing `CryptoKey` using RSA-PSS/SHA-256; the public signer uses
+  a 32-byte salt.
+- Session expiry has required signing in again. A normal page reload performs
+  the refresh-token exchange described below.
+- The observed checking and savings PDF GETs did **not** send `Authorization` or
+  `DPoP`. They carried normal cookies/UI headers and the document query references.
+  Do not carry the summary/list authentication assumptions over to PDF downloads.
+
+### Access-token issuance and page-reload recovery
+
+The access token is issued in a JSON HTTP response, not recovered as a persistent
+access-token value from the page's storage.
+
+**Endpoint**: `POST https://authentication.bmo.com/isvaop/oauth2/token`
+
+**Observed request type**: `application/x-www-form-urlencoded`.
+
+Two bank-driven flows were captured:
+
+| Action | Grant type | Observed form field names |
+| ------ | ---------- | ------------------------- |
+| Complete interactive sign-in | `authorization_code` | `code`, `code_verifier`, `client_id`, `grant_type`, `redirect_uri` |
+| Reload an authenticated bank page | `refresh_token` | `refresh_token`, `code_verifier`, `client_id`, `grant_type`, `redirect_uri` |
+
+Both returned HTTP 200 with this field structure:
+
+```json
+{
+  "access_token": "<access-token>",
+  "expires_in": 609,
+  "id_token": "<id-token>",
+  "refresh_token": "<refresh-token>",
+  "scope": "<scope>",
+  "token_type": "DPoP"
+}
+```
+
+`expires_in` was approximately ten minutes in the observed responses; this is not
+an independently measured lifetime guarantee.
+
+The reload was correlated without recording token values:
+
+1. The request's `refresh_token` matched the value in
+   `sessionStorage.sessionTokens.refreshToken` before reload.
+2. The response's `access_token` matched the token used in the subsequent
+   successful `getMySummary` request's `Authorization: dpop ...` header.
+3. The response's `refresh_token` matched session storage after reload and differed
+   from the pre-reload token: refresh-token rotation was observed.
+4. `sessionStorage.sessionTokens.accessToken` remained empty before and after.
+   The public token-storage service keeps access-token data on its in-memory
+   `_accessToken` property and blanks that field when serializing the other token
+   metadata to session storage.
+
+For the observed refresh request, `client_id` matched
+`JSON.parse(localStorage.ciam_mfe).clientId`, and `redirect_uri` matched its
+`callbackUrl`. `code_verifier` was present but empty for this refresh request;
+this does not establish its source or necessity in the initial sign-in flow.
+
+The token request carried a PS256 `DPoP` proof, with `htu`, `htm`, `jti`, and
+`iat`, and no `Authorization` header. Its `htu` was the **absolute token endpoint
+URL**, unlike the relative path in business API proofs. No `ath` claim or response
+`DPoP-Nonce` header was observed in this exchange.
+
+An extension-initiated refresh returned HTTP 200 and its new access token succeeded
+on summary requests. However, subsequent bank-UI account-detail requests using the
+previous bank-issued access token returned HTTP 401 while its JWT `exp` was still
+approximately seven minutes in the future. Merely updating the rotated refresh
+token in storage does not keep the page's in-memory access token usable. This
+rules out independent refresh as a compatible integration strategy for the
+observed session.
+
+### Existing page token-sharing events
+
+The bank's public application code registers a listener for
+`TRANSMIT_CLIENT_ACCESS_TOKEN_REQUEST` through its `customEventService`. That
+service uses `window.dispatchEvent(new CustomEvent(name, {detail: payload}))`.
+The listener answers with `TRANSMIT_CLIENT_ACCESS_TOKEN_RESPONSE`, whose detail
+has `action: "response"`, `accessToken`, and `idToken`, reading the current
+`ciamService.tokens` instead of starting a new token refresh.
+
+A read-only event probe received that response with a populated access-token
+field. This offers a way to request the page's existing token without exporting
+the value to reports, intercepting network requests, or rotating refresh tokens.
+The normal isolated content script also consumed this response and used the token
+for successful summary and checking/savings statement-list requests. The bank UI
+continued to retrieve account details and reload its overview after these requests.
+No additional token-endpoint request was observed during the extension's scoped
+operations. A subsequent extension account refresh also succeeded after the bank
+page reloaded, without another token-endpoint request. Missing/unusable responses
+remain explicit session errors.
 
 ## API Endpoints
 
@@ -20,9 +163,9 @@ BMO Canada's online banking platform uses a series of JSON-based POST APIs to re
 
 **Purpose**: Retrieve comprehensive account summary including customer information, all bank accounts, credit cards, loans, mortgages, and investments with balances and details.
 
-**Endpoint**: `POST /banking/services/mysummary/getMySummary`
+**Endpoint**: `POST /api/cdb/customer-product-and-service-directory/mysummary/getMySummary`
 
-**Request Headers**:
+**Observed Request Headers** (not a proven minimal set):
 
 - `Content-Type`: `application/json` - Indicates JSON payload
 - `Accept`: `application/json, text/plain, */*` - Accepts JSON response
@@ -31,6 +174,9 @@ BMO Canada's online banking platform uses a series of JSON-based POST APIs to re
 - `X-Request-ID`: Unique request identifier (format: `REQ_` + random hex)
 - `X-UI-Session-ID`: UI session identifier (typically `0.0.1`)
 - `Cookie`: Session cookies including `JSESSIONID`, `PD-S-SESSION-ID`, `XSRF-TOKEN`, `PMData`
+- `Authorization`: `dpop <access-token>`
+- `DPoP`: `<signed-proof>`
+- Additional observed session/device headers are described above.
 
 **Request Parameters**:
 
@@ -58,12 +204,12 @@ BMO Canada's online banking platform uses a series of JSON-based POST APIs to re
       "channelType": "OLB",
       "appName": "OLB",
       "hostName": "BDBN-HostName",
-      "clientDate": "2025-11-16T13:16:00.699",
-      "rqUID": "REQ_82a79f76e1f65220",
+      "clientDate": "2000-01-01T00:00:00.000",
+      "rqUID": "REQ_0000000000000001",
       "clientSessionID": "session-id",
       "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
       "clientIP": "127.0.0.1",
-      "mfaDeviceToken": "RNW8M08cwEduVrYVoV2SiVO67Zzcy9MTz6Qju5GLUsEVzMH%2BkgKCufBGl43wglT%2Fl%2FwCrRHt54y2tFXLoCoMVzOiNzzz%3D%3D"
+      "mfaDeviceToken": "<mfa-device-token>"
     },
     "BodyRq": {
       "refreshProfile": "N"
@@ -79,22 +225,22 @@ BMO Canada's online banking platform uses a series of JSON-based POST APIs to re
   "GetMySummaryRs": {
     "HdrRs": {
       "callStatus": "Success",
-      "hostName": "colctddtqsdps02",
-      "serverDate": "2025-11-16T08:16:00.668",
-      "rqUID": "REQ_82a79f76e1f65220",
-      "mfaDeviceToken": "SOX9N19dxFevWsZWpW3TjWP78Aady0NUz7Rkv6HMVtFWzNI%2BlhLDvgCHm54xhmU%2Fm%2FxDsSIu65z3uGYMpDpNWzPjOzzz%3D%3D",
+      "hostName": "<server-host>",
+      "serverDate": "2000-01-01T00:00:00.000",
+      "rqUID": "REQ_0000000000000001",
+      "mfaDeviceToken": "<mfa-device-token>",
       "mfaDeviceTokenExpire": 365
     },
     "BodyRs": {
-      "credential": "6621301257354012",
-      "firstName": "JOHN",
-      "lastName": "DOE",
+      "credential": "<profile-id>",
+      "firstName": "<first-name>",
+      "lastName": "<last-name>",
       "role": "BDC",
-      "customerName": "JOHN DOE",
+      "customerName": "<first-name> <last-name>",
       "displayClassLimitFlag": "Y",
-      "lastSignInDate": "2025-11-16",
-      "lastSignInTime": "8:11 AM EST",
-      "lastPasswordChangeDate": "1900-01-01",
+      "lastSignInDate": "2000-01-01",
+      "lastSignInTime": "12:00 AM EST",
+      "lastPasswordChangeDate": "2000-01-01",
       "applePayProvisioning": "true",
       "categoryDisplayOption": "",
       "categories": [
@@ -103,7 +249,7 @@ BMO Canada's online banking platform uses a series of JSON-based POST APIs to re
           "groupHeadTitle": "Bank Accounts",
           "groupTotal": [
             {
-              "summaryBalance": "2006.99",
+              "summaryBalance": "300.00",
               "currency": "CAD",
               "incompleteBalance": "N"
             }
@@ -112,41 +258,41 @@ BMO Canada's online banking platform uses a series of JSON-based POST APIs to re
             {
               "accountType": "BANK_ACCOUNT",
               "productName": "Chequing",
-              "ocifAccountName": "Primary Chequing Account",
+              "ocifAccountName": "<account-name-1>",
               "menuOptions": "VIEW_ESTATEMENTS,CHANGE_STATEMENT_OPTION",
-              "accountNumber": "0895 4905-784",
+              "accountNumber": "0000 0001-234",
               "currency": "CAD",
               "accountIndex": 0,
-              "asOfDate": "2025-11-17",
-              "accountBalance": "2006.98",
-              "availableAmount": "2006.98",
+              "asOfDate": "2000-01-01",
+              "accountBalance": "100.00",
+              "availableAmount": "100.00",
               "jumpSiteIndicator": {
                 "index": 0,
                 "name": "NONE",
                 "code": "NONE"
               },
               "isFromAm": false,
-              "ocifShortName": "QDBQBM2",
+              "ocifShortName": "<account-short-name-1>",
               "locPlasticCard": false
             },
             {
               "accountType": "BANK_ACCOUNT",
               "productName": "Savings",
-              "ocifAccountName": "Savings Amplifier Account",
+              "ocifAccountName": "<account-name-2>",
               "menuOptions": "VIEW_ESTATEMENTS,CHANGE_STATEMENT_OPTION",
-              "accountNumber": "0895 9982-100",
+              "accountNumber": "0000 0005-678",
               "currency": "CAD",
               "accountIndex": 1,
-              "asOfDate": "2025-11-17",
-              "accountBalance": "0.01",
-              "availableAmount": "0.01",
+              "asOfDate": "2000-01-01",
+              "accountBalance": "200.00",
+              "availableAmount": "200.00",
               "jumpSiteIndicator": {
                 "index": 0,
                 "name": "NONE",
                 "code": "NONE"
               },
               "isFromAm": false,
-              "ocifShortName": "IT4QBM3",
+              "ocifShortName": "<account-short-name-2>",
               "locPlasticCard": false
             }
           ]
@@ -172,7 +318,7 @@ BMO Canada's online banking platform uses a series of JSON-based POST APIs to re
         "channelType": "OLB",
         "deviceType": "web",
         "cardType": "FBCP",
-        "successfulLoginDateTime": "Sun Nov 16 08:11:21 EST 2025"
+        "successfulLoginDateTime": "Sat Jan 01 00:00:00 EST 2000"
       },
       "ownerInd": "",
       "showSSOSetupBanner": false,
@@ -188,7 +334,8 @@ BMO Canada's online banking platform uses a series of JSON-based POST APIs to re
 **Response Structure**:
 
 - `GetMySummaryRs.HdrRs.callStatus`: `"Success"` or error status
-- `GetMySummaryRs.HdrRs.mfaDeviceToken`: Updated MFA device token (save to `PMData` cookie)
+- `GetMySummaryRs.HdrRs.mfaDeviceToken`: Returned MFA device token; the bank manages
+  its session. Cookie-update requirements have not been isolated.
 - `GetMySummaryRs.BodyRs.categories[]`: Array of account categories
   - `categories[].products[]`: Individual accounts
     - `accountIndex`: Zero-based index for API #2 (required)
@@ -202,7 +349,17 @@ BMO Canada's online banking platform uses a series of JSON-based POST APIs to re
 
 **Purpose**: Retrieve encrypted token for a specific account. This token must be passed to the decryption endpoint to get the actual statement list.
 
-**Endpoint**: `POST /banking/services/estatements/getEStatementsEncryptedData`
+**Endpoint**: `POST /api/cdb/document-services/estatements/getEStatementsEncryptedData`
+
+**Observed UI action**: Open a checking account and select its Statements tab.
+The current request uses `acctType: "BA"` and `inquiryAccountIndex: 0`, sourced
+from the selected product's summary category and account index. It returns HTTP
+200 and `HdrRs.callStatus: "Success"`. The observed checking response has
+`isConsolidated: "N"`, an empty `memberAccountsList`, and an opaque `ecryptedData`
+string. Treat the historical `/banking/services/estatements/` route as superseded.
+
+**Request authentication**: The bank-owned access token and DPoP proof are used
+here as in the summary request, not just the historical cookie/UI headers.
 
 **Request Parameters**:
 
@@ -221,12 +378,12 @@ BMO Canada's online banking platform uses a series of JSON-based POST APIs to re
       "channelType": "OLB",
       "appName": "OLB",
       "hostName": "BDBN-HostName",
-      "clientDate": "2025-11-16T13:15:42.620",
-      "rqUID": "REQ_gd114g8a35785dbd",
+      "clientDate": "2000-01-01T00:00:00.000",
+      "rqUID": "REQ_0000000000000002",
       "clientSessionID": "session-id",
       "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
       "clientIP": "127.0.0.1",
-      "mfaDeviceToken": "SOX9N19dxFevWsZWpW3TjWP78Aady0NUz7Rkv6HMVtFWzNI%2BlhLDvgCHm54xhmU%2Fm%2FxDsSIu65z3uGYMpDpNWzPjOzzz%3D%3D"
+      "mfaDeviceToken": "<mfa-device-token>"
     },
     "BodyRq": {
       "acctType": "BA",
@@ -243,10 +400,10 @@ BMO Canada's online banking platform uses a series of JSON-based POST APIs to re
   "GetEStatementsEncryptedDataRs": {
     "HdrRs": {
       "callStatus": "Success",
-      "hostName": "colctddtqsdps02",
-      "serverDate": "2025-11-16T08:15:42.601",
-      "rqUID": "REQ_gd114g8a35785dbd",
-      "mfaDeviceToken": "SOX9N19dxFevWsZWpW3TjWP78Aady0NUz7Rkv6HMVtFWzNI%2BlhLDvgCHm54xhmU%2Fm%2FxDsSIu65z3uGYMpDpNWzPjOzzz%3D%3D",
+      "hostName": "<server-host>",
+      "serverDate": "2000-01-01T00:00:00.000",
+      "rqUID": "REQ_0000000000000002",
+      "mfaDeviceToken": "<mfa-device-token>",
       "mfaDeviceTokenExpire": 365
     },
     "BodyRs": {
@@ -255,10 +412,10 @@ BMO Canada's online banking platform uses a series of JSON-based POST APIs to re
       "isAnnualStatement": "N",
       "mainAccount": {
         "name": "Chequing",
-        "number": "0895 4905-784"
+        "number": "0000 0001-234"
       },
       "memberAccountsList": [],
-      "ecryptedData": "265d91be0bdbc1cbgdgb2g1b37gf1f8ecbc9780857f2g36169c9dd62g829c4008d93e1g204d86b878db66c4ce7c3g1d66f37f9b915g766f8073b87e5d1bgd61145f46e4d53ede165bg912g9f1e5e604b47966696g2990f77933b0gb29576fb92g8g4226g1f71379c61a0b30437b10bf582c3bd215gbf4639b1644beb9b8d08007816857c8fe2cc3g7c038b78cdbc7g0f3310f50d30e252ee409d89b88410c0b5816feeb35d830291650fc8443fe634607016efb4e04d6ea6f5bedc682dc9945ef33f4bcee0a8bdc6c85ff1g139ge9cf91g6f81gg72c1bfe1dg098f60db87e44bc13gg99bfb38f6cd83c37bfe3103905d16676cba078ed448405bd4f5c9e174dde94g9c2cdde8g2c5dgg07g122ba0g1b7f7259f68de02b53cg8fcg9d83198bd43gcf19c78ged6f557c4eg929f5f3bc9dec832d39e61g04b57gc3fcegf3bbe67cf08cbdfc83d5df19c58ed6b0c93g89e55046c6f6326615c3gc7bgdge4g40b3718ec4de1c370fcf26ge0c8fc51c21bgfb42g0248cb26b48d4ea87gb2d1bd954e8g3g44ed251f480fc06fd67280g1b8bd9db0d0f9b1079g4bcb58b5cc4de0093fb37g094bb37881d408a35de8b14e24dc016c2d34881c4088b598ec9d0f8078fb1814d97d0ed151589"
+      "ecryptedData": "<statement-list-reference>"
     }
   }
 }
@@ -267,7 +424,7 @@ BMO Canada's online banking platform uses a series of JSON-based POST APIs to re
 **Response Structure**:
 
 - `GetEStatementsEncryptedDataRs.HdrRs.callStatus`: `"Success"` or error status
-- `GetEStatementsEncryptedDataRs.BodyRs.ecryptedData`: Hex-encoded encrypted token (note the typo!)
+- `GetEStatementsEncryptedDataRs.BodyRs.ecryptedData`: Opaque statement-list reference (note the spelling)
 
 **Important Notes**:
 
@@ -278,23 +435,25 @@ BMO Canada's online banking platform uses a series of JSON-based POST APIs to re
 
 ### 3. Get Statement List (Decrypt Encrypted Data)
 
-**Purpose**: Decrypt the encrypted token from API #4 to get the actual list of available statements.
+**Purpose**: Exchange the opaque reference from API #2 for the list of available statements.
 
-**Endpoint**: `GET /WebContentManager/getEDocumentsJSONList`
+**Endpoint**: `GET /api/cdb/document-services/WebContentManager/getEDocumentsJSONList`
 
 **Query Parameters**:
 
-- `encrypted_data`: The hex-encoded encrypted token from `GetEStatementsEncryptedDataRs.BodyRs.ecryptedData`
+- `encrypted_data`: The opaque string from `GetEStatementsEncryptedDataRs.BodyRs.ecryptedData`
 
 **Example URL**:
 
 ```
-GET https://www1.bmo.com/WebContentManager/getEDocumentsJSONList?encrypted_data=265d91be0bdbc1cbgdgb2g1b37gf1f8ecbc9780857f2g36169c9dd62g829c4008d93e1g204d86b878db66c4ce7c3g1d6...
+GET https://www1.bmo.com/api/cdb/document-services/WebContentManager/getEDocumentsJSONList?encrypted_data=<statement-list-reference>
 ```
 
-**Request Headers**:
+**Observed Request Headers** (not a proven minimal set):
 
 ```
+Authorization: dpop <access-token>
+DPoP: <signed-proof>
 Cookie: JSESSIONID={session-id}; XSRF-TOKEN={token}; APIC-XSRF-TOKEN={token}; ...
 User-Agent: Mozilla/5.0 ...
 ```
@@ -305,21 +464,21 @@ User-Agent: Mozilla/5.0 ...
 {
   "eDocuments": [
     {
-      "date": "2025-10-17",
-      "dummyParams": "4ed1c5e0-e3bf-5d0e-b74f-f1gg45fcfc83",
-      "token": "-213382375997849",
+      "date": "2000-03-31",
+      "dummyParams": "<document-reference-1>",
+      "token": "<document-token>",
       "econfirmation": "false"
     },
     {
-      "date": "2025-09-18",
-      "dummyParams": "ge0bg6d5-47df-589d-0f94-d60081700881",
-      "token": "-213382375997849",
+      "date": "2000-02-29",
+      "dummyParams": "<document-reference-2>",
+      "token": "<document-token>",
       "econfirmation": "false"
     },
     {
-      "date": "2025-08-18",
-      "dummyParams": "b606d139-gg40-5e2e-bb3f-5d9e9431db5e",
-      "token": "-213382375997849",
+      "date": "2000-01-31",
+      "dummyParams": "<document-reference-3>",
+      "token": "<document-token>",
       "econfirmation": "false"
     }
   ]
@@ -330,13 +489,27 @@ User-Agent: Mozilla/5.0 ...
 
 - `eDocuments[]`: Array of available statements
   - `date`: Statement date (`YYYY-MM-DD`)
-  - `dummyParams`: Unique UUID for this statement (required for API #4)
+  - `dummyParams`: Opaque reference for this statement (required for API #4)
   - `token`: Authorization token (shared across all statements in this response)
 
 **Key Points**:
 
 - Use `dummyParams` and `token` from each statement to download PDFs (API #4)
-- The `token` is request-specific and changes each time you call this API
+- The current checking request returned HTTP 200 with 11 `eDocuments` entries
+  spanning two calendar years. The UI initially showed only the selected year's
+  six entries; a year filter is not evidence of API pagination.
+- The savings flow used the same reference/list endpoints with
+  `acctType: "BA"` and `inquiryAccountIndex: 1`. The reference response was
+  successful and nonconsolidated with no member accounts; its list contained
+  eight documents across two years, with three visible in the selected year.
+- Switching accounts can leave the previous account's hidden panels in the DOM.
+  Compare only the currently visible statement panel, not all page links.
+- Entries contain `date`, `dummyParams`, `token`, and `econfirmation`. Dates use
+  `YYYY-MM-DD`; download identifiers and tokens are strings. Preserve the values
+  returned for the selected document without inferring their format.
+- Historical captures described `token` as changing on every call. Rotation and
+  expiry were not isolated in the current investigation, so do not rely on a
+  particular lifetime or reuse guarantee.
 
 ---
 
@@ -353,18 +526,25 @@ The complete PDF statement download flow:
 
 **Purpose**: Download a specific statement as a PDF file.
 
-**Endpoint**: `GET /WebContentManager/DownloadEStatementInPDFBOSServlet`
+**Endpoint**: `GET /api/cdb/document-services/WebContentManager/DownloadEStatementInPDFBOSServlet`
+
+**Observed UI action**: Click the latest checking or savings statement link in the bank's
+Statements tab. The browser saved a PDF through this endpoint with HTTP 200 and
+`Content-Type: application/pdf`. Its query contained only `dummyParams`, `token`,
+and `econfirmation=false`. Both captured download requests omitted `Authorization`
+and `DPoP`; `Sec-Fetch-Mode` was `cors` and `Sec-Fetch-Dest` was `empty`.
+Do not assume one authentication/header recipe applies to every endpoint.
 
 **Query Parameters**:
 
-- `dummyParams`: Encrypted statement identifier (from decrypted `ecryptedData`)
-- `token`: Security token (from decrypted `ecryptedData`)
+- `dummyParams`: Statement reference from `eDocuments[].dummyParams`
+- `token`: Document token from `eDocuments[].token`
 - `econfirmation`: Confirmation flag (typically `"false"`)
 
 **Example URL**:
 
 ```
-GET https://www1.bmo.com/WebContentManager/DownloadEStatementInPDFBOSServlet?dummyParams=4ed1c5e0-e3bf-5d0e-b74f-f1gg45fcfc83&token=-213382375997849&econfirmation=false
+GET https://www1.bmo.com/api/cdb/document-services/WebContentManager/DownloadEStatementInPDFBOSServlet?dummyParams=<document-reference>&token=<document-token>&econfirmation=false
 ```
 
 **Request Headers**:
@@ -378,7 +558,7 @@ User-Agent: Mozilla/5.0 ...
 
 - **Status**: `200 OK`
 - **Content-Type**: `application/pdf`
-- **Content-Disposition**: `attachment; filename=eStatement_2025-10-17.pdf`
+- **Content-Disposition**: `attachment; filename=eStatement_2000-03-31.pdf`
 - **Body**: Binary PDF file data
 
 **Key Points**:
@@ -386,3 +566,47 @@ User-Agent: Mozilla/5.0 ...
 - Both `dummyParams` and `token` come from API #3 response
 - Each statement has unique `dummyParams`; `token` is shared within the same API #3 response
 - Returns PDF file with name format: `eStatement_{YYYY-MM-DD}.pdf`
+
+## Shared contract mapping and remaining evidence gaps
+
+The existing [BMO module](../bank/bmo.mjs) maps the retained data shapes to the
+[shared bank contract](../bank/bank.types.ts):
+
+- `Profile.sessionId` comes from the readable `XSRF-TOKEN` cookie.
+  `GetMySummaryRs.BodyRs.credential` supplies `profileId`; `customerName`, or
+  `firstName` and `lastName`, supplies `profileName`.
+- Accounts are products whose `menuOptions` contains `VIEW_ESTATEMENTS`.
+  `accountId` combines the enclosing `categoryName` and `accountIndex`;
+  these also supply the statement-reference request's `acctType` and
+  `inquiryAccountIndex`. They are session-context selectors, not established
+  permanent identifiers.
+- `productName` (with `ocifAccountName` as fallback) supplies `accountName`.
+  The last four digits of `accountNumber`, ignoring formatting, supply
+  `accountMask`. Category and product name determine the contract account type.
+- Each document's `date` supplies the ISO statement date; `dummyParams` and
+  `token` are serialized together as the statement identifier and passed back
+  unchanged in the PDF query. The browser response body supplies the PDF Blob.
+
+The data-field mappings remain consistent with the checking/savings UI evidence.
+The current module uses the observed API paths and the bank-owned token interface
+described above, while PDF downloads use document references and cookies.
+
+Remaining gaps are the exact minimum required headers, statement-reference expiry
+and reuse guarantees, and unobserved account types and consolidated flows. The
+extension does not implement refresh or relogin; those remain bank-page operations.
+
+## Integration direction
+
+Use the bank's existing token-sharing events from the normal BMO content-script
+module. Obtain the current token for each JSON request and create the observed
+DPoP proof using the browser's existing non-exportable key. Bound the IndexedDB
+lookup so blocked storage does not leave authentication pending, and verify the
+session again after signing, immediately before sending the request. The extension
+must not perform its own refresh-token exchange, change the bank's session storage,
+install a main-world helper, or intercept the bank's network requests.
+
+Only the access token is needed from the event response; do not persist or report
+either token. Missing event responses and rejected authenticated requests must
+surface as errors, not trigger independent refresh. Session recovery belongs on
+the bank page through reload/sign-in. PDF downloads continue to use their returned
+document references and ordinary page cookies without DPoP.
