@@ -211,7 +211,9 @@ synthetic or placeholders. Numeric identifiers retain their numeric type.
   - `nickname`: User-defined account nickname
   - `payeeId`: Payment identifier (negative of accountId)
   - `tileDetail.productCode`: Product code (e.g., "VP", "VW", "ME")
-  - `tileDetail.productGroupCode`: Product group code (2 for credit cards, 3 for loans)
+  - `tileDetail.productGroupCode`: Compatibility hint (`2` historically identifies
+    credit cards and `3` loans), not an exhaustive classification. Current credit
+    cards use multiple group values; also inspect the tile/detail type codes.
   - `tileDetail.currentBalance`: Current account balance
   - `tileDetail.availableBalance`: Available credit/balance
   - `tileDetail.nextPaymentDueDate`: Next payment due date (YYYYMMDD format)
@@ -470,9 +472,13 @@ GET /svc/rr/documents/secure/idal/v5/pdfdoc/star/list?docKey={docKey}&sor={docSO
 
 6. **Rate Limiting**: No limit was established in this investigation.
 
-7. **Error Handling**: Reject an explicit non-`SUCCESS` code, malformed document
-   lists, invalid dates, and non-PDF download bodies rather than reporting empty
-   lists or successful downloads. Empty document arrays are valid.
+7. **Error Handling**: Reject an explicit non-`SUCCESS` code, including in the
+   cached dashboard or profile responses actually consumed. An outer app-data
+   success does not override a subresponse failure; unrelated cached-service
+   errors need not block the operation. Reject malformed document lists/entries,
+   missing or unusable identifiers for selected statements, invalid dates, and
+   non-PDF download bodies rather than returning empty/partial success. Empty
+   document arrays and intentional non-statement exclusions remain valid.
 
 ## Shared contract mapping
 
@@ -483,7 +489,10 @@ GET /svc/rr/documents/secure/idal/v5/pdfdoc/star/list?docKey={docKey}&sor={docSO
   Classify observed loan tile/detail codes before relying on a user-chosen nickname.
 - `STMT` documents become statements; `MORTGAGE_YES` and other categories are
   excluded. Interpret `YYYYMMDD` as a calendar date at UTC midnight so the popup's
-  ISO-date formatting does not shift the day in positive time zones.
+  ISO-date formatting does not shift the day in positive time zones. ISO calendar
+  dates and valid ISO timestamps remain supported; validate the original calendar
+  components before applying a timestamp's offset. Reject unsupported date formats
+  instead of relying on JavaScript's permissive date normalization.
 - The document ID and account ID feed the key request. PDF bytes become the Blob;
   MIME type and signature checks reject obvious non-PDF responses but do not
   replace complete parsing/rendering/content validation.

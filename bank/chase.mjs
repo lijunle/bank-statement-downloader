@@ -30,7 +30,15 @@ async function getAppData() {
  * @returns {Promise<any>}
  */
 async function readJson(response, source) {
-    const data = await response.json();
+    return validateResponse(await response.json(), source);
+}
+
+/**
+ * @param {any} data
+ * @param {string} source
+ * @returns {any}
+ */
+function validateResponse(data, source) {
     if (!data || typeof data !== 'object' || Array.isArray(data)) {
         throw new Error(`Invalid response format from ${source}`);
     }
@@ -118,11 +126,15 @@ export async function getAccounts(profile) {
         } else if (data.cache) {
             // Check cache for dashboard tiles
             const dashboardData = data.cache.find(/** @param {any} item */(item) =>
-                item.url && item.url.includes('dashboard')
+                typeof item.url === 'string' && item.url.includes('/dashboard/tiles/')
             );
 
-            if (dashboardData?.response?.accountTiles) {
-                for (const tile of dashboardData.response.accountTiles) {
+            if (dashboardData) {
+                const dashboard = validateResponse(dashboardData.response, 'dashboard API');
+                if (!Array.isArray(dashboard.accountTiles)) {
+                    throw new Error('Invalid dashboard account list');
+                }
+                for (const tile of dashboard.accountTiles) {
                     if (tile.accountId) {
                         accounts.push({
                             profile,
@@ -174,6 +186,9 @@ export async function getStatements(account) {
         }
 
         for (const docRef of docRefs) {
+            if (!docRef || typeof docRef !== 'object' || Array.isArray(docRef)) {
+                throw new Error('Invalid document entry from document reference API');
+            }
             // Filter by account if accountId is present in the document
             const docAccountId = docRef.accountId || docRef.accountNumber;
             if (docAccountId && String(docAccountId) !== account.accountId) {
@@ -182,8 +197,17 @@ export async function getStatements(account) {
 
             // Only include statements (not other document types)
             const docType = docRef.idaldocType || docRef.documentType || docRef.type;
+            if (typeof docType !== 'string' || !docType) {
+                throw new Error('Invalid document entry from document reference API');
+            }
             if (docType !== 'STMT' && docType !== 'STATEMENT') {
                 continue;
+            }
+
+            const statementId = docRef.documentId ?? docRef.docKey ?? docRef.id;
+            if (!(typeof statementId === 'string' && statementId.trim()) &&
+                !(typeof statementId === 'number' && Number.isFinite(statementId))) {
+                throw new Error('Invalid statement identifier from document reference API');
             }
 
             const dateStr = docRef.documentDate || docRef.statementDate || docRef.date;
@@ -192,22 +216,22 @@ export async function getStatements(account) {
             }
             const calendarDate = /^\d{8}$/.test(dateStr)
                 ? `${dateStr.slice(0, 4)}-${dateStr.slice(4, 6)}-${dateStr.slice(6, 8)}`
-                : /^\d{4}-\d{2}-\d{2}$/.test(dateStr) ? dateStr : null;
-            const date = new Date(calendarDate ? `${calendarDate}T00:00:00.000Z` : dateStr);
-            if (!Number.isFinite(date.getTime()) ||
-                (calendarDate && date.toISOString().slice(0, 10) !== calendarDate)) {
+                : /^\d{4}-\d{2}-\d{2}(?:T.+)?$/.test(dateStr) ? dateStr.slice(0, 10) : null;
+            const calendar = new Date(`${calendarDate}T00:00:00.000Z`);
+            if (!Number.isFinite(calendar.getTime()) || calendar.toISOString().slice(0, 10) !== calendarDate) {
+                throw new Error('Invalid statement date from document reference API');
+            }
+            const date = dateStr.includes('T') ? new Date(dateStr) : calendar;
+            if (!Number.isFinite(date.getTime())) {
                 throw new Error('Invalid statement date from document reference API');
             }
             const statementDate = date.toISOString();
 
-            const statementId = docRef.documentId || docRef.docKey || docRef.id;
-            if (statementId) {
-                statements.push({
-                    account,
-                    statementId: String(statementId),
-                    statementDate,
-                });
-            }
+            statements.push({
+                account,
+                statementId: String(statementId),
+                statementDate,
+            });
         }
 
         // Sort statements by date descending (newest first)
@@ -356,6 +380,14 @@ export async function getProfile(sessionId) {
         // Also check cache array if present
         if (data.cache && Array.isArray(data.cache)) {
             for (const item of data.cache) {
+                const needsGreeting = !data.greetingName &&
+                    (item.url?.includes('/deck/greeting/list') || item.response?.greetingName);
+                const needsProfile = !data.profileId &&
+                    (item.url?.includes('/user/metadata/list') || item.response?.profileId ||
+                        (!data.personId && item.response?.personId));
+                if (needsGreeting || needsProfile) {
+                    validateResponse(item.response, 'profile API');
+                }
                 if (item.response) {
                     if (item.response.greetingName && !data.greetingName) {
                         profileName = item.response.greetingName.charAt(0).toUpperCase() +
@@ -363,7 +395,7 @@ export async function getProfile(sessionId) {
                     }
                     if (item.response.profileId && !data.profileId) {
                         profileId = String(item.response.profileId);
-                    } else if (item.response.personId && !data.personId) {
+                    } else if (item.response.personId && !data.profileId && !data.personId) {
                         profileId = String(item.response.personId);
                     }
                 }

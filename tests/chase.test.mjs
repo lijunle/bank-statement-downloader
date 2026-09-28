@@ -136,6 +136,40 @@ describe('Chase API', () => {
             assert.strictEqual(profile.profileId, '4002');
             assert.strictEqual(profile.profileName, 'Example');
         });
+
+        it('rejects failed cached profile services when their fields are needed', async () => {
+            for (const [url, direct] of [
+                ['/svc/rl/accounts/secure/v1/deck/greeting/list', { profileId: 5001 }],
+                ['/svc/rl/accounts/secure/v1/user/metadata/list', { greetingName: 'TEST' }],
+            ]) {
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true,
+                    json: async () => ({
+                        code: 'SUCCESS',
+                        ...direct,
+                        cache: [{ url, response: { code: 'SESSION_EXPIRED' } }],
+                    }),
+                }));
+                await assert.rejects(getProfile('test-session'), /profile API.*unsuccessful/);
+            }
+        });
+
+        it('ignores unused cached service errors when direct profile fields are available', async () => {
+            mockFetch.mock.mockImplementation(async () => ({
+                ok: true,
+                json: async () => ({
+                    code: 'SUCCESS', profileId: 5001, greetingName: 'TEST',
+                    cache: [
+                        { url: '/svc/rl/accounts/secure/v1/deck/greeting/list', response: { code: 'FAILED' } },
+                        { url: '/svc/rl/accounts/secure/v1/user/metadata/list', response: { code: 'FAILED', personId: 4001 } },
+                        { url: '/unrelated/service', response: { code: 'FAILED' } },
+                    ],
+                }),
+            }));
+            assert.deepEqual(await getProfile('test-session'), {
+                sessionId: 'test-session', profileId: '5001', profileName: 'Test',
+            });
+        });
     });
 
     describe('getAccounts', () => {
@@ -218,6 +252,53 @@ describe('Chase API', () => {
             }));
             await assert.rejects(getProfile('test-session'), /app data API.*unsuccessful/);
             await assert.rejects(getAccounts(mockProfile), /app data API.*unsuccessful/);
+        });
+
+        it('rejects failed or malformed cached dashboard responses', async () => {
+            for (const response of [{ code: 'SESSION_EXPIRED' }, { code: 'FAILED', accountTiles: [] }, null, {}]) {
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true,
+                    json: async () => ({
+                        code: 'SUCCESS',
+                        cache: [{ url: '/svc/rr/accounts/secure/v4/dashboard/tiles/list', response }],
+                    }),
+                }));
+                await assert.rejects(getAccounts(mockProfile), /dashboard API|dashboard account list/);
+            }
+        });
+
+        it('accepts empty dashboard tiles without a code and ignores unrelated cached errors', async () => {
+            mockFetch.mock.mockImplementation(async () => ({
+                ok: true,
+                json: async () => ({
+                    code: 'SUCCESS',
+                    cache: [
+                        { url: '/svc/rr/accounts/secure/v1/menu/list?context=dashboard_main_menu', response: { code: 'FAILED' } },
+                        { url: '/svc/rr/accounts/secure/v4/dashboard/tiles/list', response: { accountTiles: [] } },
+                    ],
+                }),
+            }));
+            assert.deepEqual(await getAccounts(mockProfile), []);
+        });
+
+        it('selects dashboard tiles rather than an unrelated dashboard menu response', async () => {
+            mockFetch.mock.mockImplementation(async () => ({
+                ok: true,
+                json: async () => ({
+                    code: 'SUCCESS',
+                    cache: [
+                        { url: '/svc/rr/accounts/secure/v1/menu/list?context=dashboard_main_menu', response: { code: 'FAILED' } },
+                        {
+                            url: '/svc/rr/accounts/secure/v4/dashboard/tiles/list',
+                            response: {
+                                code: 'SUCCESS',
+                                accountTiles: [{ accountId: 1001, nickname: 'Synthetic Card', mask: '1234', accountTileType: 'CARD' }],
+                            },
+                        },
+                    ],
+                }),
+            }));
+            assert.equal((await getAccounts(mockProfile))[0]?.accountId, '1001');
         });
     });
 
@@ -389,6 +470,91 @@ describe('Chase API', () => {
                 }));
                 await assert.rejects(getStatements(mockAccount), /Invalid statement date/);
             }
+        });
+
+        it('rejects impossible calendar components in ISO timestamps', async () => {
+            for (const date of [
+                '2000-02-30T00:00:00.000Z',
+                '2001-02-29T12:30:00+08:00',
+                '2000-04-31T23:00:00-02:00',
+            ]) {
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true,
+                    json: async () => ({
+                        code: 'SUCCESS',
+                        idaldocRefs: [{ documentId: 'synthetic-statement', documentDate: date, idaldocType: 'STMT' }],
+                    }),
+                }));
+                await assert.rejects(getStatements(mockAccount), /Invalid statement date/);
+            }
+        });
+
+        it('preserves valid calendar dates and ISO timestamps across offset boundaries', async () => {
+            for (const [input, expected] of [
+                ['20000229', '2000-02-29T00:00:00.000Z'],
+                ['2000-02-29', '2000-02-29T00:00:00.000Z'],
+                ['2000-02-29T23:45:00-02:00', '2000-03-01T01:45:00.000Z'],
+                ['2000-03-01T00:30:00+08:00', '2000-02-29T16:30:00.000Z'],
+                ['2000-02-29T12:30:00.123Z', '2000-02-29T12:30:00.123Z'],
+            ]) {
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true,
+                    json: async () => ({
+                        code: 'SUCCESS',
+                        idaldocRefs: [{ documentId: 'synthetic-statement', documentDate: input, idaldocType: 'STMT' }],
+                    }),
+                }));
+                const statements = await getStatements(mockAccount);
+                assert.equal(statements[0].statementDate, expected);
+            }
+        });
+
+        it('rejects undocumented locale-dependent date formats', async () => {
+            for (const date of ['03/31/2000', 'March 31, 2000', '2000-02-30 00:00:00']) {
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true,
+                    json: async () => ({
+                        code: 'SUCCESS',
+                        idaldocRefs: [{ documentId: 'synthetic-statement', documentDate: date, idaldocType: 'STMT' }],
+                    }),
+                }));
+                await assert.rejects(getStatements(mockAccount), /Invalid statement date/);
+            }
+        });
+
+        it('rejects malformed rows and unusable IDs without returning partial statement lists', async () => {
+            const valid = { idaldocType: 'STMT', documentDate: '20000331', documentId: 'synthetic-statement' };
+            for (const row of [
+                42, null, [], {},
+                { ...valid, documentId: undefined },
+                { ...valid, documentId: {} },
+                { ...valid, documentId: ' ' },
+                { ...valid, documentId: true },
+            ]) {
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true,
+                    json: async () => ({ code: 'SUCCESS', idaldocRefs: [valid, row] }),
+                }));
+                await assert.rejects(getStatements(mockAccount), /Invalid document entry|Invalid statement identifier/);
+            }
+        });
+
+        it('preserves intentional document exclusions and legacy numeric statement IDs', async () => {
+            mockFetch.mock.mockImplementation(async () => ({
+                ok: true,
+                json: async () => ({
+                    code: 'SUCCESS',
+                    idaldocRefs: [
+                        { idaldocType: 'MORTGAGE_YES' },
+                        { idaldocType: 'NOTICE' },
+                        { idaldocType: 'STMT', accountId: 'different-account' },
+                        { idaldocType: 'STMT', documentDate: '20000331', documentId: 1001 },
+                    ],
+                }),
+            }));
+            const statements = await getStatements(mockAccount);
+            assert.equal(statements.length, 1);
+            assert.equal(statements[0].statementId, '1001');
         });
     });
 
