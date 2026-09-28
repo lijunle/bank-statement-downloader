@@ -1,10 +1,55 @@
 # Chase Bank Statement API Analysis
 
-**Analysis as of:** 2025-12-03
+**Analysis as of:** 2026-09-27
 
 ## Overview
 
 This document analyzes the Chase bank APIs used to retrieve user profile information, list accounts, retrieve statements, and download statement PDFs.
+
+## Current scope and evidence
+
+The authenticated account overview at `secure.chase.com/web/auth/dashboard`
+issued `POST /svc/rl/accounts/l4/v1/app/data/list`, returning HTTP 200 and
+`code: "SUCCESS"`. The request had an empty body and
+`Content-Type: application/x-www-form-urlencoded; charset=UTF-8`, superseding the
+historical JSON-body description.
+
+Its `cache` includes the dashboard tiles, greeting, user metadata, and
+`/svc/rl/accounts/secure/v1/csrf/token/list` responses. Top-level `profileId`
+and tile `accountId` values are numbers; tile masks are strings. The available
+tiles include credit cards (`CARD` / `BAC`), checking (`DDA` / `CHK`), an auto
+loan (`AUTOLOAN` / `ALA`), and a mortgage (`MORTGAGE` / `HMG`). Credit-card
+`productGroupCode` values are not limited to `2`. These observations establish
+account discovery, not statement or download support for every product.
+
+Opening the bank's **Statements & documents** link issued
+`POST /svc/rr/documents/secure/idal/v2/docref/list` with HTTP 200. Account-specific
+expansion used `accountFilter=<account-id>` and
+`dateFilter.idalDateFilterType=CURRENT_YEAR`. The selected checking and credit-card
+lists contained five and four statements respectively; the auto-loan list contained
+nine. The mortgage list contained nine `STMT` documents plus a `MORTGAGE_YES`
+year-end statement, which is outside the regular-statement scope.
+
+All four bank-UI downloads used the documented `dockey/list` POST and returned
+`docURI: "/svc/rr/documents/secure/idal/v5/pdfdoc/star/list"` and
+`docSOR: "STAR_MS"`. The ensuing PDF GETs returned HTTP 200 and `application/pdf`.
+The checking download's `csrftoken` matched the token in the app-data cache's
+CSRF response. Its `docKey` and `sor` matched the selected dockey response.
+This proves the observed request path, not that every historical header is required.
+
+The checking UI offered a save menu with standard and accessible PDFs. The other
+three selected products offered direct save links. All four standard bank-UI PDFs
+parsed and rendered without repair or warnings and matched the selected account
+mask. Checking's selected date matched the document text; the credit-card closing
+date matched in `MM/DD/YY` form. The mortgage PDF's labelled **Statement date**
+was one day before its list date. The auto-loan PDF instead exposed a labelled
+**Due Date**, twenty days after its list date. Do not equate the document-list date
+with every product's printed billing date. Use the independently saved bank-UI
+PDF's labelled field when comparing a later extension copy for these loan flows.
+These bank-UI checks do not establish extension download acceptance.
+
+The historical direct login URL `/auth/fcc/login` returned HTTP 405 when opened
+with GET. The user instead signed in through the form on `https://www.chase.com/`.
 
 ## Base URLs
 
@@ -14,7 +59,8 @@ This document analyzes the Chase bank APIs used to retrieve user profile informa
 
 ## API Authentication
 
-All APIs require authentication via session cookies. Key authentication headers include:
+The exercised requests use the authenticated page's cookies. Historical cookie
+names below describe the session context, not a proven minimal authentication set:
 
 - `Cookie`: Contains multiple session tokens including:
   - `AMSESSION`: JWT-based session token
@@ -36,16 +82,17 @@ All APIs require authentication via session cookies. Key authentication headers 
 
 **Request Headers**:
 
-- `Content-Type: application/json`
+- `Content-Type: application/x-www-form-urlencoded; charset=UTF-8`
 - `Cookie`: Session authentication cookies
 
 **Request Body**:
 
-```json
-{}
-```
+Empty body (not a JSON object).
 
 **Response Structure** (key sections):
+
+All identifiers, names, balances, dates, and document references in examples are
+synthetic or placeholders. Numeric identifiers retain their numeric type.
 
 ```json
 {
@@ -56,7 +103,7 @@ All APIs require authentication via session cookies. Key authentication headers 
       "usage": "SESSION",
       "response": {
         "greetingId": "TIME_OF_DAY",
-        "greetingName": "JOHN"
+        "greetingName": "TEST"
       }
     },
     {
@@ -64,39 +111,39 @@ All APIs require authentication via session cookies. Key authentication headers 
       "usage": "ONCE",
       "response": {
         "code": "SUCCESS",
-        "defaultAccountId": 894082738,
+        "defaultAccountId": 1001,
         "personalTileGroups": [
           {
-            "customerTileGroupId": "331815912",
-            "creditCardAccountTileIds": [-025462372, 1238293696, ...],
-            "loanAccountTileIds": [-1690625348, -2029112462, 474249683],
-            "creditScoreTileId": 2016057738,
-            "creditJourneyTileId": 1551611085
+            "customerTileGroupId": "3001",
+            "creditCardAccountTileIds": [-2001],
+            "loanAccountTileIds": [],
+            "creditScoreTileId": 2002,
+            "creditJourneyTileId": 2003
           }
         ],
         "accountTiles": [
           {
-            "tileId": -025482572,
-            "accountId": 894284738,
+            "tileId": -2001,
+            "accountId": 1001,
             "accountOriginationCode": "6613",
             "accountTileType": "CARD",
             "cardType": "FREEDOM_PLATINUM",
             "accountTileDetailType": "BAC",
             "rewardProgramCode": "0404",
             "rewardsTypeId": "VP-6610-0414",
-            "mask": "5673",
-            "nickname": "Freedom X",
-            "payeeId": -894082738,
+            "mask": "1234",
+            "nickname": "Synthetic Card",
+            "payeeId": -1001,
             "tileDetail": {
-              "availableBalance": 6000.0,
+              "availableBalance": 1000.0,
               "currentBalance": 0.0,
-              "lastPaymentDate": "20251015",
+              "lastPaymentDate": "20000215",
               "nextPaymentAmount": 0.0,
-              "nextPaymentDueDate": "20251115",
+              "nextPaymentDueDate": "20000315",
               "pastDueAmount": 0.0,
               "productCode": "VP",
               "productGroupCode": 2,
-              "cardArtGuid": "a1bf7f4d-7621-5b5d-0e17-de767aa2c5c1"
+              "cardArtGuid": "<card-art-id>"
             }
           }
         ]
@@ -107,51 +154,51 @@ All APIs require authentication via session cookies. Key authentication headers 
       "usage": "SESSION",
       "response": {
         "code": "SUCCESS",
-        "personId": 2292345594,
-        "profileId": 292845991,
+        "personId": 4001,
+        "profileId": 5001,
         "segment": "CCI",
-        "zipCode": "091334172",
-        "stateCode": "WA",
-        "countryCode": "USA",
+        "zipCode": "<zip-code>",
+        "stateCode": "<state-code>",
+        "countryCode": "<country-code>",
         "maskedEmail": {
-          "domain": "gmail.com",
-          "prefix": "a",
-          "suffix": "z"
+          "domain": "example.test",
+          "prefix": "<prefix>",
+          "suffix": "<suffix>"
         },
         "productInfos": [
           {
-            "accountId": 894004738,
+            "accountId": 1001,
             "rewardsTypeId": "VP-6610-0414",
             "cardDefaultNickName": "Freedom",
-            "mask": "5692",
-            "nickName": "Freedom X",
+            "mask": "1234",
+            "nickName": "Synthetic Card",
             "productId": "CARD-BAC-001"
           },
           {
-            "accountId": 2101029692,
-            "mask": "0391",
-            "nickName": "Primary Mortgage",
+            "accountId": 1002,
+            "mask": "5678",
+            "nickName": "Synthetic Mortgage",
             "productId": "MORTGAGE-HMG-004"
           },
           {
-            "accountId": 974024543,
-            "mask": "5522",
-            "nickName": "Auto Loan",
+            "accountId": 1003,
+            "mask": "9012",
+            "nickName": "Synthetic Auto Loan",
             "productId": "AUTOLOAN-ALA-446"
           }
         ]
       }
     }
   ],
-  "personId": 2295346594,
-  "profileId": 296845391,
-  "currentDateTime": "2025-11-17T06:77:66.888Z"
+  "personId": 4001,
+  "profileId": 5001,
+  "currentDateTime": "2000-03-01T00:00:00.000Z"
 }
 ```
 
 **Important Fields**:
 
-- `cache[].response.greetingName`: User's first name (e.g., "JOHN")
+- `cache[].response.greetingName`: Greeting name
 - `personId`: Person identifier
 - `profileId`: Profile identifier (also available in PC_1_0 cookie as `pfid`)
 - `cache[].response.accountTiles[]`: Detailed list of all accounts with tile information
@@ -175,7 +222,10 @@ All APIs require authentication via session cookies. Key authentication headers 
 - `cache[].response.maskedEmail`: Masked email address
 - `cache[].response.zipCode`, `stateCode`, `countryCode`: Address information
 
-**Note**: The full name is stored in uppercase in the greeting. The username can be found in the `auth-user-info` cookie (e.g., `johndoe1|timestamp|timestamp`). This single API call provides all necessary profile and account metadata including account IDs, eliminating the need for separate dashboard module list or account detail calls for statement downloads.
+**Note**: Do not assume the greeting is a full legal name. The integration uses
+the greeting response and top-level profile metadata rather than reading the
+username from cookies. The app-data response provides the account IDs needed for
+the exercised statement flows.
 
 ## 2. List Available Statements
 
@@ -201,30 +251,30 @@ accountFilter={accountId}&dateFilter.idalDateFilterType=CURRENT_YEAR
 Example:
 
 ```
-accountFilter=894984728&dateFilter.idalDateFilterType=CURRENT_YEAR
+accountFilter=1001&dateFilter.idalDateFilterType=CURRENT_YEAR
 ```
 
 **Request Parameters**:
 
-- `accountFilter`: The account ID (from account detail API)
+- `accountFilter`: The account ID from the account tile
 - `dateFilter.idalDateFilterType`: Date filter type
   - `CURRENT_YEAR`: Current year's documents
-  - `PRIOR_YEAR`: Previous year's documents
-  - `ALL`: All available documents
+  - Other filters were described historically but have not been revalidated.
+    The integration currently requests only `CURRENT_YEAR`.
 
 **Response Structure**:
 
 ```json
 {
   "code": "SUCCESS",
-  "payeeId": -894184738,
+  "payeeId": -1001,
   "paperless": true,
   "mailMeACopy": true,
   "payAllowed": true,
   "idaldocRefs": [
     {
-      "documentId": "a27ffd1d-330c-5edc-c036-0f07fgf41bb6",
-      "documentDate": "20250918",
+      "documentId": "<document-id>",
+      "documentDate": "20000301",
       "inserts": [],
       "adaVersionAvailable": false,
       "pageCount": "4",
@@ -241,7 +291,8 @@ accountFilter=894984728&dateFilter.idalDateFilterType=CURRENT_YEAR
 **Important Fields**:
 
 - `documentId`: Unique identifier for the document (used in download API)
-- `documentDate`: Date of the statement in YYYYMMDD format
+- `documentDate`: Document-list date in YYYYMMDD format; not necessarily the
+  printed statement or payment due date
 - `documentTypeDesc`: Type of document (e.g., "Statement", "Year-end mortgage")
 - `idaldocType`: Document type code ("STMT" for statements)
 - `pageCount`: Number of pages in the document
@@ -270,7 +321,7 @@ accountFilter={accountId}&dateFilter.idalDateFilterType=CURRENT_YEAR&documentId=
 Example:
 
 ```
-accountFilter=894984728&dateFilter.idalDateFilterType=CURRENT_YEAR&documentId=a27ffd1d-330c-5edc-c036-0f07fgf41bb6
+accountFilter=1001&dateFilter.idalDateFilterType=CURRENT_YEAR&documentId=<document-id>
 ```
 
 **Request Parameters**:
@@ -284,7 +335,7 @@ accountFilter=894984728&dateFilter.idalDateFilterType=CURRENT_YEAR&documentId=a2
 ```json
 {
   "code": "SUCCESS",
-  "docKey": "239c8961-080a-582e-90d8-e49437ccg60b",
+  "docKey": "<document-key>",
   "docSOR": "STAR_MS",
   "docURI": "/svc/rr/documents/secure/idal/v5/pdfdoc/star/list"
 }
@@ -320,7 +371,7 @@ docKey={docKey}&sor={docSOR}&adaVersion=false&download=true&csrftoken={csrfToken
 Example:
 
 ```
-docKey=239c8961-080a-582e-90d8-e49437ccg60b&sor=STAR_MS&adaVersion=false&download=true&csrftoken=2ex2d252fbe92gc97d666c38dc5g72e04e6deb213b02c0156c9b7d43c986bde5
+docKey=<document-key>&sor=STAR_MS&adaVersion=false&download=true&csrftoken=<csrf-token>
 ```
 
 **Request Parameters**:
@@ -329,13 +380,16 @@ docKey=239c8961-080a-582e-90d8-e49437ccg60b&sor=STAR_MS&adaVersion=false&downloa
 - `sor`: System of record from the dockey API response
 - `adaVersion`: Whether to download ADA-compliant version (typically `false`)
 - `download`: Set to `true` to trigger download
-- `csrftoken`: CSRF token (can be extracted from session cookies or page context)
+- `csrftoken`: Token from `/svc/rl/accounts/secure/v1/csrf/token/list`. Its response
+  is included in the observed app-data cache. The integration requests that
+  endpoint with an empty POST body before each download; it does not guess a cookie
+  value or use a fixed CSRF token.
 
 **Response**: Binary PDF file
 
 The response will be a PDF file with content type `application/pdf`. The filename is typically in the format: `{YYYYMMDD}-statements-{last4digits}-.pdf`
 
-Example: `20250918-statements-5693-.pdf`
+Synthetic example: `20000301-statements-1234-.pdf`
 
 ## Account Type Differences
 
@@ -343,23 +397,22 @@ Different account types have slightly different data structures:
 
 ### Credit Cards
 
-- `productGroupCode`: 2
-- `detail.detailType`: "BAC"
+- `accountTileType`: `CARD`; `accountTileDetailType`: `BAC`
+- `productGroupCode`: Multiple observed values; do not require only `2`
 - `productCode`: Varies by card type (e.g., "VP", "VH", "SW")
 - Statement date typically mid-month
 
 ### Mortgages
 
-- `productGroupCode`: 3
-- `detail.detailType`: "HMORTGAGE"
+- `accountTileType`: `MORTGAGE`; `accountTileDetailType`: `HMG`
+- Historical `HMORTGAGE` and group-code mappings remain compatibility fallbacks
 - `productCode`: "H" series
 - Statement date typically beginning of month
 - May include "Year-end mortgage" documents
 
 ### Auto Loans
 
-- `productGroupCode`: 3
-- `detail.detailType`: "ALA"
+- `accountTileType`: `AUTOLOAN`; `accountTileDetailType`: `ALA`
 - `productCode`: "A" series
 - Statement date typically mid-month
 
@@ -369,10 +422,11 @@ Different account types have slightly different data structures:
 
 ```
 POST /svc/rl/accounts/l4/v1/app/data/list
-Body: {}
+Body: <empty>
 ```
 
-Extract `accountId` values from `cache[].response.accountTiles[]` or `cache[].response.productInfos[]`.
+Extract `accountId` values from the cached dashboard response's `accountTiles`.
+The metadata `productInfos` describe accounts but are not an integration fallback.
 
 ### Step 2: For each account, get statements
 
@@ -396,17 +450,17 @@ GET /svc/rr/documents/secure/idal/v5/pdfdoc/star/list?docKey={docKey}&sor={docSO
 
 ## Notes
 
-1. **Authentication**: All APIs require valid session cookies. The session is established through the login flow at `https://www.chase.com/auth/fcc/login`.
+1. **Authentication**: Let the bank establish and renew the session through its
+   public sign-in UI. The integration uses page cookies without managing login.
 
-2. **CSRF Token**: The CSRF token is required for the download API and can be obtained from the session cookies or page context.
+2. **CSRF Token**: The PDF requests carry the token from the bank's CSRF response;
+   a successful request does not establish which headers are individually mandatory.
 
-3. **Account ID**: The `accountId` is the primary identifier for accounts and is used consistently across all document-related APIs. It can be positive (e.g., 894084738) while the `payeeId` is negative (e.g., -894084738).
+3. **Account ID**: The `accountId` is passed unchanged to document APIs. It is not
+   the displayed account number; use the bank's `mask` for identification.
 
-4. **Date Filtering**: The `dateFilter.idalDateFilterType` parameter allows filtering documents by year. Available values:
-
-   - `CURRENT_YEAR`: Current calendar year
-   - `PRIOR_YEAR`: Previous calendar year
-   - Can potentially use multiple years by making separate requests
+4. **Date Filtering**: Only `CURRENT_YEAR` was exercised. Older periods, accessible
+   PDFs, other document categories, and additional accounts remain unverified.
 
 5. **Document Types**: In addition to regular statements (`STMT`), there may be other document types:
 
@@ -414,6 +468,22 @@ GET /svc/rr/documents/secure/idal/v5/pdfdoc/star/list?docKey={docKey}&sor={docSO
    - Year-end summaries
    - Notices and disclosures
 
-6. **Rate Limiting**: Chase likely implements rate limiting. Consider adding delays between requests to avoid triggering anti-bot measures.
+6. **Rate Limiting**: No limit was established in this investigation.
 
-7. **Error Handling**: All responses include a `code` field. Always check for `"SUCCESS"` before processing the response data.
+7. **Error Handling**: Reject an explicit non-`SUCCESS` code, malformed document
+   lists, invalid dates, and non-PDF download bodies rather than reporting empty
+   lists or successful downloads. Empty document arrays are valid.
+
+## Shared contract mapping
+
+- `Profile.sessionId` uses the existing `v1st` cookie mapping. Its behavior across
+  sign-out and user switching was not validated; do not assume it proves identity.
+- Top-level `profileId` and the cached greeting supply profile identity/display.
+- Tile `accountId`, `nickname`, and `mask` supply account identity, name, and mask.
+  Classify observed loan tile/detail codes before relying on a user-chosen nickname.
+- `STMT` documents become statements; `MORTGAGE_YES` and other categories are
+  excluded. Interpret `YYYYMMDD` as a calendar date at UTC midnight so the popup's
+  ISO-date formatting does not shift the day in positive time zones.
+- The document ID and account ID feed the key request. PDF bytes become the Blob;
+  MIME type and signature checks reject obvious non-PDF responses but do not
+  replace complete parsing/rendering/content validation.

@@ -13,7 +13,6 @@ const BASE_URL = 'https://secure.chase.com';
 
 /**
  * Fetches the app/data/list API which contains both profile and account information
- * This is cached to avoid duplicate API calls
  * @returns {Promise<any>}
  */
 async function getAppData() {
@@ -22,12 +21,22 @@ async function getAppData() {
         body: '', // Empty body with Content-Length: 0
     });
 
-    const data = /** @type {any} */ (await response.json());
+    return readJson(response, 'app data API');
+}
 
-    if (!data || typeof data !== 'object') {
-        throw new Error('Invalid response format from app data API');
+/**
+ * @param {Response} response
+ * @param {string} source
+ * @returns {Promise<any>}
+ */
+async function readJson(response, source) {
+    const data = await response.json();
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        throw new Error(`Invalid response format from ${source}`);
     }
-
+    if (data.code !== undefined && data.code !== 'SUCCESS') {
+        throw new Error(`Chase ${source} returned an unsuccessful response`);
+    }
     return data;
 }
 
@@ -153,17 +162,16 @@ export async function getStatements(account) {
             body: docRefParams.toString(),
         });
 
-        const docRefData = /** @type {any} */ (await docRefResponse.json());
-
-        if (!docRefData || typeof docRefData !== 'object') {
-            throw new Error('Invalid response format from document reference API');
-        }
+        const docRefData = await readJson(docRefResponse, 'document reference API');
 
         // Transform document references to statements
         const statements = [];
 
         // Check various possible response structures
-        const docRefs = docRefData.idaldocRefs || docRefData.documentRefs || docRefData.documents || [];
+        const docRefs = docRefData.idaldocRefs ?? docRefData.documentRefs ?? docRefData.documents;
+        if (!Array.isArray(docRefs)) {
+            throw new Error('Invalid document list from document reference API');
+        }
 
         for (const docRef of docRefs) {
             // Filter by account if accountId is present in the document
@@ -178,24 +186,19 @@ export async function getStatements(account) {
                 continue;
             }
 
-            // Parse date - could be in various formats
-            let statementDate;
             const dateStr = docRef.documentDate || docRef.statementDate || docRef.date;
-
-            if (dateStr) {
-                if (typeof dateStr === 'string' && dateStr.length === 8) {
-                    // YYYYMMDD format
-                    const year = parseInt(dateStr.substring(0, 4), 10);
-                    const month = parseInt(dateStr.substring(4, 6), 10) - 1; // JS months are 0-indexed
-                    const day = parseInt(dateStr.substring(6, 8), 10);
-                    statementDate = new Date(year, month, day).toISOString();
-                } else {
-                    // Try parsing as ISO date or other format
-                    statementDate = new Date(dateStr).toISOString();
-                }
-            } else {
-                statementDate = new Date().toISOString();
+            if (typeof dateStr !== 'string' || !dateStr) {
+                throw new Error('Invalid statement date from document reference API');
             }
+            const calendarDate = /^\d{8}$/.test(dateStr)
+                ? `${dateStr.slice(0, 4)}-${dateStr.slice(4, 6)}-${dateStr.slice(6, 8)}`
+                : /^\d{4}-\d{2}-\d{2}$/.test(dateStr) ? dateStr : null;
+            const date = new Date(calendarDate ? `${calendarDate}T00:00:00.000Z` : dateStr);
+            if (!Number.isFinite(date.getTime()) ||
+                (calendarDate && date.toISOString().slice(0, 10) !== calendarDate)) {
+                throw new Error('Invalid statement date from document reference API');
+            }
+            const statementDate = date.toISOString();
 
             const statementId = docRef.documentId || docRef.docKey || docRef.id;
             if (statementId) {
@@ -230,7 +233,7 @@ export async function downloadStatement(statement) {
             body: '',
         });
 
-        const csrfData = /** @type {any} */ (await csrfResponse.json());
+        const csrfData = await readJson(csrfResponse, 'CSRF token API');
         const csrfToken = csrfData.csrfToken;
 
         if (!csrfToken) {
@@ -250,11 +253,7 @@ export async function downloadStatement(statement) {
             body: docKeyParams.toString(),
         });
 
-        const docKeyData = /** @type {any} */ (await docKeyResponse.json());
-
-        if (!docKeyData || typeof docKeyData !== 'object') {
-            throw new Error('Invalid response format from document key API');
-        }
+        const docKeyData = await readJson(docKeyResponse, 'document key API');
 
         // Extract document key
         const docKey = docKeyData.docKey || docKeyData.documentKey;
@@ -299,6 +298,10 @@ export async function downloadStatement(statement) {
 
         if (blob.size === 0) {
             throw new Error('Downloaded PDF is empty');
+        }
+        if (blob.type.split(';')[0].trim().toLowerCase() !== 'application/pdf' ||
+            await blob.slice(0, 5).text() !== '%PDF-') {
+            throw new Error('Chase did not return a PDF statement');
         }
 
         return blob;
@@ -402,7 +405,8 @@ function mapAccountType(tile) {
     if (tileType === 'CARD' || detailType === 'BAC') {
         return 'CreditCard';
     }
-    if (detailType === 'HMORTGAGE' || detailType === 'ALA') {
+    if (tileType === 'MORTGAGE' || tileType === 'AUTOLOAN' ||
+        detailType === 'HMG' || detailType === 'HMORTGAGE' || detailType === 'ALA') {
         return 'Loan';
     }
 
