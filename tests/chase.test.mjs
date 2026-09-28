@@ -2,8 +2,7 @@
  * Unit tests for Chase bank statement API implementation
  * Tests cover credit card and loan account functionality
  * 
- * Note: All mock data is based on actual content from analyze/chase.har
- * to ensure tests match real API responses.
+ * Fixtures use synthetic values with the documented response shapes.
  */
 
 import { describe, it, beforeEach, mock } from 'node:test';
@@ -14,12 +13,12 @@ const mockFetch = mock.fn();
 global.fetch = mockFetch;
 
 // Mock crypto using mock.method
-const mockRandomUUID = mock.fn(() => '12345678-1234-1234-1234-123456789abc');
+const mockRandomUUID = mock.fn(() => '00000000-0000-4000-8000-000000000001');
 mock.method(global.crypto, 'randomUUID', mockRandomUUID);
 
 // Mock document.cookie for getSessionId
 global.document = {
-    cookie: 'v1st=R38624F462H8E5EG; other=value; JSESSIONID=test',
+    cookie: 'v1st=synthetic-session; other=value; JSESSIONID=test',
 };
 
 // Import the module after setting up mocks
@@ -47,7 +46,7 @@ describe('Chase API', () => {
     describe('getSessionId', () => {
         it('should extract v1st cookie from document.cookie', () => {
             const sessionId = getSessionId();
-            assert.strictEqual(sessionId, 'R38624F462H8E5EG');
+            assert.strictEqual(sessionId, 'synthetic-session');
         });
 
         it('should throw error when v1st cookie is not found', () => {
@@ -64,15 +63,15 @@ describe('Chase API', () => {
         it('should extract profile information from app/data/list API', async () => {
             const mockResponse = {
                 code: 'SUCCESS',
-                personId: 3407456705,
-                profileId: 408956102,
+                personId: 4001,
+                profileId: 5001,
                 cache: [
                     {
                         url: '/svc/rl/accounts/secure/v1/deck/greeting/list',
                         usage: 'SESSION',
                         response: {
                             greetingId: 'TIME_OF_DAY',
-                            greetingName: 'JOHN',
+                            greetingName: 'TEST',
                         },
                     },
                     {
@@ -80,8 +79,8 @@ describe('Chase API', () => {
                         usage: 'SESSION',
                         response: {
                             code: 'SUCCESS',
-                            personId: 3407456705,
-                            profileId: 408956102,
+                            personId: 4001,
+                            profileId: 5001,
                         },
                     },
                 ],
@@ -98,8 +97,8 @@ describe('Chase API', () => {
 
             assert.deepStrictEqual(profile, {
                 sessionId: 'test-session-id',
-                profileId: '408956102',
-                profileName: 'John',
+                profileId: '5001',
+                profileName: 'Test',
             });
 
             const calls = mockFetch.mock.calls;
@@ -115,27 +114,61 @@ describe('Chase API', () => {
         it('should convert greeting name from uppercase to title case', async () => {
             const mockResponse = {
                 code: 'SUCCESS',
-                profileId: 94837261,
-                greetingName: 'JOHN',
+                profileId: 5001,
+                greetingName: 'TEST',
             };
             mockFetch.mock.mockImplementationOnce(() => Promise.resolve({ ok: true, json: () => Promise.resolve(mockResponse) }));
             const profile = await getProfile('test-session-id');
-            assert.strictEqual(profile.profileName, 'John');
-            assert.notStrictEqual(profile.profileName, 'JOHN');
-            assert.notStrictEqual(profile.profileName, 'john');
+            assert.strictEqual(profile.profileName, 'Test');
+            assert.notStrictEqual(profile.profileName, 'TEST');
+            assert.notStrictEqual(profile.profileName, 'test');
         });
 
         it('should include correct profile fields', async () => {
             const mockResponse = {
                 code: 'SUCCESS',
-                personId: 51628374,
-                greetingName: 'ALICE',
+                personId: 4002,
+                greetingName: 'EXAMPLE',
             };
             mockFetch.mock.mockImplementationOnce(() => Promise.resolve({ ok: true, json: () => Promise.resolve(mockResponse) }));
             const profile = await getProfile('another-session-id');
             assert.strictEqual(profile.sessionId, 'another-session-id');
-            assert.strictEqual(profile.profileId, '51628374');
-            assert.strictEqual(profile.profileName, 'Alice');
+            assert.strictEqual(profile.profileId, '4002');
+            assert.strictEqual(profile.profileName, 'Example');
+        });
+
+        it('rejects failed cached profile services when their fields are needed', async () => {
+            for (const [url, direct] of [
+                ['/svc/rl/accounts/secure/v1/deck/greeting/list', { profileId: 5001 }],
+                ['/svc/rl/accounts/secure/v1/user/metadata/list', { greetingName: 'TEST' }],
+            ]) {
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true,
+                    json: async () => ({
+                        code: 'SUCCESS',
+                        ...direct,
+                        cache: [{ url, response: { code: 'SESSION_EXPIRED' } }],
+                    }),
+                }));
+                await assert.rejects(getProfile('test-session'), /profile API.*unsuccessful/);
+            }
+        });
+
+        it('ignores unused cached service errors when direct profile fields are available', async () => {
+            mockFetch.mock.mockImplementation(async () => ({
+                ok: true,
+                json: async () => ({
+                    code: 'SUCCESS', profileId: 5001, greetingName: 'TEST',
+                    cache: [
+                        { url: '/svc/rl/accounts/secure/v1/deck/greeting/list', response: { code: 'FAILED' } },
+                        { url: '/svc/rl/accounts/secure/v1/user/metadata/list', response: { code: 'FAILED', personId: 4001 } },
+                        { url: '/unrelated/service', response: { code: 'FAILED' } },
+                    ],
+                }),
+            }));
+            assert.deepEqual(await getProfile('test-session'), {
+                sessionId: 'test-session', profileId: '5001', profileName: 'Test',
+            });
         });
     });
 
@@ -150,8 +183,8 @@ describe('Chase API', () => {
             const mockResponse = {
                 code: 'SUCCESS',
                 accountTiles: [
-                    { accountId: 'GH4', productGroupCode: 2, nickname: 'Freedom', mask: '6284' },
-                    { accountId: 'MR7', productGroupCode: 3, nickname: 'Auto Loan', mask: '3951' },
+                    { accountId: 'GH4', productGroupCode: 2, nickname: 'Synthetic Card', mask: '1234' },
+                    { accountId: 'MR7', productGroupCode: 3, nickname: 'Synthetic Auto Loan', mask: '5678' },
                 ],
             };
             mockFetch.mock.mockImplementationOnce(() => Promise.resolve({ ok: true, json: () => Promise.resolve(mockResponse) }));
@@ -166,9 +199,9 @@ describe('Chase API', () => {
             const mockResponse = {
                 code: 'SUCCESS',
                 accountTiles: [
-                    { accountId: 'JK8', productGroupCode: 2, nickname: 'Sapphire', mask: '7193' },
-                    { accountId: 'PQ5', productGroupCode: 2, nickname: 'Ink', mask: '2847' },
-                    { accountId: 'XY9', productGroupCode: 3, nickname: 'Mortgage', mask: '5076' },
+                    { accountId: 'JK8', productGroupCode: 2, nickname: 'Synthetic Card A', mask: '1234' },
+                    { accountId: 'PQ5', productGroupCode: 2, nickname: 'Synthetic Card B', mask: '5678' },
+                    { accountId: 'XY9', productGroupCode: 3, nickname: 'Synthetic Mortgage', mask: '9012' },
                 ],
             };
             mockFetch.mock.mockImplementationOnce(() => Promise.resolve({ ok: true, json: () => Promise.resolve(mockResponse) }));
@@ -181,8 +214,8 @@ describe('Chase API', () => {
             const mockResponse = {
                 code: 'SUCCESS',
                 accountTiles: [
-                    { accountId: 'TU62', productGroupCode: 3, nickname: 'Auto Loan', mask: '4628' },
-                    { accountId: 'VW31', productGroupCode: 2, nickname: 'Freedom Flex', mask: '9153' },
+                    { accountId: 'TU62', productGroupCode: 3, nickname: 'Synthetic Auto Loan', mask: '1234' },
+                    { accountId: 'VW31', productGroupCode: 2, nickname: 'Synthetic Card', mask: '5678' },
                 ],
             };
             mockFetch.mock.mockImplementationOnce(() => Promise.resolve({ ok: true, json: () => Promise.resolve(mockResponse) }));
@@ -191,14 +224,90 @@ describe('Chase API', () => {
             assert.strictEqual(loans.length, 1);
             assert.strictEqual(loans[0].accountId, 'TU62');
         });
+
+        it('maps observed mortgage and auto-loan tile codes without relying on nicknames', async () => {
+            mockFetch.mock.mockImplementationOnce(async () => ({
+                ok: true,
+                json: async () => ({
+                    code: 'SUCCESS',
+                    cache: [{
+                        url: '/svc/rr/accounts/secure/v4/dashboard/tiles/list',
+                        response: {
+                            accountTiles: [
+                                { accountId: 1001, accountTileType: 'MORTGAGE', accountTileDetailType: 'HMG', nickname: 'Home', mask: '1234' },
+                                { accountId: 1002, accountTileType: 'AUTOLOAN', accountTileDetailType: 'ALA', nickname: 'Vehicle', mask: '5678' },
+                            ],
+                        },
+                    }],
+                }),
+            }));
+            const accounts = await getAccounts(mockProfile);
+            assert.deepEqual(accounts.map(a => a.accountType), ['Loan', 'Loan']);
+        });
+
+        it('rejects business failures rather than returning a fallback profile or empty accounts', async () => {
+            mockFetch.mock.mockImplementation(async () => ({
+                ok: true,
+                json: async () => ({ code: 'SESSION_EXPIRED' }),
+            }));
+            await assert.rejects(getProfile('test-session'), /app data API.*unsuccessful/);
+            await assert.rejects(getAccounts(mockProfile), /app data API.*unsuccessful/);
+        });
+
+        it('rejects failed or malformed cached dashboard responses', async () => {
+            for (const response of [{ code: 'SESSION_EXPIRED' }, { code: 'FAILED', accountTiles: [] }, null, {}]) {
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true,
+                    json: async () => ({
+                        code: 'SUCCESS',
+                        cache: [{ url: '/svc/rr/accounts/secure/v4/dashboard/tiles/list', response }],
+                    }),
+                }));
+                await assert.rejects(getAccounts(mockProfile), /dashboard API|dashboard account list/);
+            }
+        });
+
+        it('accepts empty dashboard tiles without a code and ignores unrelated cached errors', async () => {
+            mockFetch.mock.mockImplementation(async () => ({
+                ok: true,
+                json: async () => ({
+                    code: 'SUCCESS',
+                    cache: [
+                        { url: '/svc/rr/accounts/secure/v1/menu/list?context=dashboard_main_menu', response: { code: 'FAILED' } },
+                        { url: '/svc/rr/accounts/secure/v4/dashboard/tiles/list', response: { accountTiles: [] } },
+                    ],
+                }),
+            }));
+            assert.deepEqual(await getAccounts(mockProfile), []);
+        });
+
+        it('selects dashboard tiles rather than an unrelated dashboard menu response', async () => {
+            mockFetch.mock.mockImplementation(async () => ({
+                ok: true,
+                json: async () => ({
+                    code: 'SUCCESS',
+                    cache: [
+                        { url: '/svc/rr/accounts/secure/v1/menu/list?context=dashboard_main_menu', response: { code: 'FAILED' } },
+                        {
+                            url: '/svc/rr/accounts/secure/v4/dashboard/tiles/list',
+                            response: {
+                                code: 'SUCCESS',
+                                accountTiles: [{ accountId: 1001, nickname: 'Synthetic Card', mask: '1234', accountTileType: 'CARD' }],
+                            },
+                        },
+                    ],
+                }),
+            }));
+            assert.equal((await getAccounts(mockProfile))[0]?.accountId, '1001');
+        });
     });
 
     describe('getStatements - Credit Card', () => {
         const mockAccount = {
             profile: { sessionId: 'test', profileId: 'test', profileName: 'Test' },
-            accountId: '894184738',
+            accountId: '1001',
             accountName: 'Credit Card A',
-            accountMask: '9593',
+            accountMask: '1234',
             accountType: 'CreditCard',
         };
 
@@ -207,22 +316,22 @@ describe('Chase API', () => {
                 code: 'SUCCESS',
                 idaldocRefs: [
                     {
-                        documentId: 'h9b24299-eg0e-6d0d-1b52-ef268ghfdi08',
-                        documentDate: '20250918',
+                        documentId: 'synthetic-statement-1',
+                        documentDate: '20000331',
                         documentTypeDesc: 'Statement',
                         idaldocType: 'STMT',
                         pageCount: '4',
                     },
                     {
-                        documentId: 'd05dcc94-1f74-668f-c4f1-g237gc536f2g',
-                        documentDate: '20250818',
+                        documentId: 'synthetic-statement-2',
+                        documentDate: '20000229',
                         documentTypeDesc: 'Statement',
                         idaldocType: 'STMT',
                         pageCount: '4',
                     },
                     {
-                        documentId: '44617cdc-cg8c-6519-122c-63df26523cg5',
-                        documentDate: '20250718',
+                        documentId: 'synthetic-statement-3',
+                        documentDate: '20000131',
                         documentTypeDesc: 'Statement',
                         idaldocType: 'STMT',
                         pageCount: '4',
@@ -240,8 +349,8 @@ describe('Chase API', () => {
             const statements = await getStatements(mockAccount);
 
             assert.strictEqual(statements.length, 3);
-            assert.strictEqual(statements[0].statementId, 'h9b24299-eg0e-6d0d-1b52-ef268ghfdi08');
-            assert.strictEqual(statements[0].statementDate, new Date(2025, 8, 18).toISOString()); // September 18, 2025
+            assert.strictEqual(statements[0].statementId, 'synthetic-statement-1');
+            assert.strictEqual(statements[0].statementDate, '2000-03-31T00:00:00.000Z');
             assert.strictEqual(statements[0].account, mockAccount);
 
             // Verify statements are sorted by date descending
@@ -266,17 +375,17 @@ describe('Chase API', () => {
                 idaldocRefs: [
                     {
                         documentId: 'stmt-2',
-                        documentDate: '20250918',
+                        documentDate: '20000331',
                         idaldocType: 'STMT',
                     },
                     {
                         documentId: 'notice-3',
-                        documentDate: '20250915',
+                        documentDate: '20000315',
                         idaldocType: 'NOTICE',
                     },
                     {
                         documentId: 'tax-4',
-                        documentDate: '20250101',
+                        documentDate: '20000101',
                         idaldocType: 'TAX',
                     },
                 ],
@@ -323,14 +432,138 @@ describe('Chase API', () => {
 
             await assert.rejects(getStatements(mockAccount), /Invalid response format/);
         });
+
+        it('preserves the document calendar date in positive UTC offsets', async () => {
+            const previous = process.env.TZ;
+            process.env.TZ = 'Asia/Shanghai';
+            try {
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true,
+                    json: async () => ({
+                        code: 'SUCCESS',
+                        idaldocRefs: [{ documentId: 'synthetic-statement', documentDate: '20000331', idaldocType: 'STMT' }],
+                    }),
+                }));
+                const statements = await getStatements(mockAccount);
+                assert.equal(statements[0].statementDate, '2000-03-31T00:00:00.000Z');
+            } finally {
+                if (previous === undefined) delete process.env.TZ;
+                else process.env.TZ = previous;
+            }
+        });
+
+        it('rejects business errors and missing document lists rather than reporting no statements', async () => {
+            for (const data of [{ code: 'SESSION_EXPIRED' }, { code: 'SUCCESS' }, { idaldocRefs: {} }]) {
+                mockFetch.mock.mockImplementation(async () => ({ ok: true, json: async () => data }));
+                await assert.rejects(getStatements(mockAccount), /document reference API|document list/);
+            }
+        });
+
+        it('rejects missing or impossible statement dates instead of inventing a date', async () => {
+            for (const date of [undefined, '20000230', 'not-a-date']) {
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true,
+                    json: async () => ({
+                        code: 'SUCCESS',
+                        idaldocRefs: [{ documentId: 'synthetic-statement', documentDate: date, idaldocType: 'STMT' }],
+                    }),
+                }));
+                await assert.rejects(getStatements(mockAccount), /Invalid statement date/);
+            }
+        });
+
+        it('rejects impossible calendar components in ISO timestamps', async () => {
+            for (const date of [
+                '2000-02-30T00:00:00.000Z',
+                '2001-02-29T12:30:00+08:00',
+                '2000-04-31T23:00:00-02:00',
+            ]) {
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true,
+                    json: async () => ({
+                        code: 'SUCCESS',
+                        idaldocRefs: [{ documentId: 'synthetic-statement', documentDate: date, idaldocType: 'STMT' }],
+                    }),
+                }));
+                await assert.rejects(getStatements(mockAccount), /Invalid statement date/);
+            }
+        });
+
+        it('preserves valid calendar dates and ISO timestamps across offset boundaries', async () => {
+            for (const [input, expected] of [
+                ['20000229', '2000-02-29T00:00:00.000Z'],
+                ['2000-02-29', '2000-02-29T00:00:00.000Z'],
+                ['2000-02-29T23:45:00-02:00', '2000-03-01T01:45:00.000Z'],
+                ['2000-03-01T00:30:00+08:00', '2000-02-29T16:30:00.000Z'],
+                ['2000-02-29T12:30:00.123Z', '2000-02-29T12:30:00.123Z'],
+            ]) {
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true,
+                    json: async () => ({
+                        code: 'SUCCESS',
+                        idaldocRefs: [{ documentId: 'synthetic-statement', documentDate: input, idaldocType: 'STMT' }],
+                    }),
+                }));
+                const statements = await getStatements(mockAccount);
+                assert.equal(statements[0].statementDate, expected);
+            }
+        });
+
+        it('rejects undocumented locale-dependent date formats', async () => {
+            for (const date of ['03/31/2000', 'March 31, 2000', '2000-02-30 00:00:00']) {
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true,
+                    json: async () => ({
+                        code: 'SUCCESS',
+                        idaldocRefs: [{ documentId: 'synthetic-statement', documentDate: date, idaldocType: 'STMT' }],
+                    }),
+                }));
+                await assert.rejects(getStatements(mockAccount), /Invalid statement date/);
+            }
+        });
+
+        it('rejects malformed rows and unusable IDs without returning partial statement lists', async () => {
+            const valid = { idaldocType: 'STMT', documentDate: '20000331', documentId: 'synthetic-statement' };
+            for (const row of [
+                42, null, [], {},
+                { ...valid, documentId: undefined },
+                { ...valid, documentId: {} },
+                { ...valid, documentId: ' ' },
+                { ...valid, documentId: true },
+            ]) {
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true,
+                    json: async () => ({ code: 'SUCCESS', idaldocRefs: [valid, row] }),
+                }));
+                await assert.rejects(getStatements(mockAccount), /Invalid document entry|Invalid statement identifier/);
+            }
+        });
+
+        it('preserves intentional document exclusions and legacy numeric statement IDs', async () => {
+            mockFetch.mock.mockImplementation(async () => ({
+                ok: true,
+                json: async () => ({
+                    code: 'SUCCESS',
+                    idaldocRefs: [
+                        { idaldocType: 'MORTGAGE_YES' },
+                        { idaldocType: 'NOTICE' },
+                        { idaldocType: 'STMT', accountId: 'different-account' },
+                        { idaldocType: 'STMT', documentDate: '20000331', documentId: 1001 },
+                    ],
+                }),
+            }));
+            const statements = await getStatements(mockAccount);
+            assert.equal(statements.length, 1);
+            assert.equal(statements[0].statementId, '1001');
+        });
     });
 
     describe('getStatements - Loan', () => {
         const mockAccount = {
             profile: { sessionId: 'test', profileId: 'test', profileName: 'Test' },
-            accountId: '3212160803',
-            accountName: 'Anytown Mortgage',
-            accountMask: '1902',
+            accountId: '1002',
+            accountName: 'Synthetic Mortgage',
+            accountMask: '5678',
             accountType: 'Loan',
         };
 
@@ -339,22 +572,22 @@ describe('Chase API', () => {
                 code: 'SUCCESS',
                 idaldocRefs: [
                     {
-                        documentId: '75cc4866-88ee-6g87-1e15-2ed0f326195c',
-                        documentDate: '20251102',
+                        documentId: 'synthetic-loan-statement-1',
+                        documentDate: '20000302',
                         documentTypeDesc: 'Statement',
                         idaldocType: 'STMT',
                     },
                     {
-                        documentId: 'h6hcc1b8-h3f0-6176-1222-32d2f56g1858',
-                        documentDate: '20251002',
+                        documentId: 'synthetic-loan-statement-2',
+                        documentDate: '20000202',
                         documentTypeDesc: 'Statement',
                         idaldocType: 'STMT',
                     },
                     {
-                        documentId: 'year-end-3135',
-                        documentDate: '20241231',
+                        documentId: 'synthetic-year-end',
+                        documentDate: '20000108',
                         documentTypeDesc: 'Year-end mortgage',
-                        idaldocType: 'STMT',
+                        idaldocType: 'MORTGAGE_YES',
                     },
                 ],
             };
@@ -368,35 +601,33 @@ describe('Chase API', () => {
 
             const statements = await getStatements(mockAccount);
 
-            assert.strictEqual(statements.length, 3);
-            assert.strictEqual(statements[0].statementId, '75cc4866-88ee-6g87-1e15-2ed0f326195c');
-            assert.strictEqual(statements[0].statementDate, new Date(2025, 10, 2).toISOString()); // November 2, 2025
+            assert.strictEqual(statements.length, 2);
+            assert.strictEqual(statements[0].statementId, 'synthetic-loan-statement-1');
+            assert.strictEqual(statements[0].statementDate, '2000-03-02T00:00:00.000Z');
 
             // Verify API call
             const calls = mockFetch.mock.calls;
-            assert.ok(calls[0].arguments[1].body.includes('accountFilter=3212160803'));
+            assert.ok(calls[0].arguments[1].body.includes('accountFilter=1002'));
         });
     });
 
     describe('downloadStatement', () => {
         const mockAccount = {
             profile: { sessionId: 'test', profileId: 'test', profileName: 'Test' },
-            accountId: '905195849',
+            accountId: '1003',
             accountName: 'Credit Card B',
-            accountMask: '0604',
+            accountMask: '9012',
             accountType: 'CreditCard',
         };
 
         const mockStatement = {
             account: mockAccount,
-            statementId: 'g9c24299-eg0e-6d0d-1b52-ef268ghfdi08',
-            statementDate: new Date(2025, 8, 18),
+            statementId: 'synthetic-download-document',
+            statementDate: '2000-03-31T00:00:00.000Z',
         };
 
         it('should download statement PDF', async () => {
-            const pdfData = new Array(230789).fill(0); // Create array with correct size
-            const mockPdfBlob = new Blob([new Uint8Array(pdfData)], { type: 'application/pdf' });
-            // Note: size is automatically set by Blob constructor
+            const mockPdfBlob = new Blob(['%PDF-1.7\nsynthetic document'], { type: 'application/pdf' });
 
             let callCount = 0;
             mockFetch.mock.mockImplementation(() => {
@@ -413,7 +644,7 @@ describe('Chase API', () => {
                         ok: true,
                         json: () =>
                             Promise.resolve({
-                                docKey: '340d9072-191b-693f-01e9-f50548ddh71c',
+                                docKey: 'synthetic-document-key',
                                 docSOR: 'STAR_MS',
                                 docURI: '/svc/rr/documents/secure/idal/v5/pdfdoc/star/list',
                             }),
@@ -430,7 +661,7 @@ describe('Chase API', () => {
             const blob = await downloadStatement(mockStatement);
 
             assert.strictEqual(blob, mockPdfBlob);
-            assert.strictEqual(blob.size, 230789);
+            assert.ok(blob.size > 0);
 
             // Verify API calls
             const calls = mockFetch.mock.calls;
@@ -448,13 +679,13 @@ describe('Chase API', () => {
                 calls[1].arguments[0],
                 'https://secure.chase.com/svc/rr/documents/secure/idal/v2/dockey/list'
             );
-            assert.ok(calls[1].arguments[1].body.includes('accountFilter=905195849'));
-            assert.ok(calls[1].arguments[1].body.includes('documentId=g9c24299-eg0e-6d0d-1b52-ef268ghfdi08'));
+            assert.ok(calls[1].arguments[1].body.includes('accountFilter=1003'));
+            assert.ok(calls[1].arguments[1].body.includes('documentId=synthetic-download-document'));
 
             // Verify PDF download request
             const downloadUrl = calls[2].arguments[0];
             assert.ok(downloadUrl.startsWith('https://secure.chase.com/svc/rr/documents/secure/idal/v5/pdfdoc/star/list'));
-            assert.ok(downloadUrl.includes('docKey=340d9072-191b-693f-01e9-f50548ddh71c'));
+            assert.ok(downloadUrl.includes('docKey=synthetic-document-key'));
             assert.ok(downloadUrl.includes('sor=STAR_MS'));
             assert.ok(downloadUrl.includes('csrftoken=test-csrf-token-123'));
             assert.ok(downloadUrl.includes('download=true'));
@@ -521,6 +752,24 @@ describe('Chase API', () => {
     });
 
     describe('Error Handling', () => {
+        it('rejects non-PDF responses even when the download returns HTTP 200', async () => {
+            for (const blob of [
+                new Blob(['<html>Sign in</html>'], { type: 'text/html' }),
+                new Blob(['{"error":"expired"}'], { type: 'application/pdf' }),
+            ]) {
+                mockFetch.mock.mockImplementation(async url => {
+                    if (url.includes('/csrf/token/')) return { ok: true, json: async () => ({ csrfToken: 'synthetic-csrf' }) };
+                    if (url.includes('/dockey/')) return { ok: true, json: async () => ({ code: 'SUCCESS', docKey: 'synthetic-key', docSOR: 'STAR_MS' }) };
+                    return { ok: true, blob: async () => blob };
+                });
+                await assert.rejects(downloadStatement({
+                    account: { accountId: '1001' },
+                    statementId: 'synthetic-document',
+                    statementDate: '2000-03-31T00:00:00.000Z',
+                }), /did not return a PDF/);
+            }
+        });
+
         it('should throw error when fetch fails', async () => {
             const mockAccount = {
                 profile: { sessionId: 'test', profileId: 'test', profileName: 'Test' },
