@@ -13,62 +13,34 @@ export const bankId = 'discover';
 export const bankName = 'Discover';
 
 /**
- * Helper to perform fetch via popup when on wrong domain
+ * Perform cross-origin fetch through the background worker.
  * @param {string} url
  * @param {RequestInit} [options]
  * @returns {Promise<Response>}
  */
 async function fetchViaPopup(url, options) {
-    try {
-        // Try to send message to popup/background
-        /** @type {RequestFetchMessage} */
-        const message = {
-            action: 'requestFetch',
-            url,
-            options: options ? {
-                method: options.method,
-                headers: /** @type {Record<string, string>} */ (options.headers),
-                credentials: options.credentials
-            } : undefined
-        };
-
-        /** @type {RequestFetchResponse} */
-        const response = await chrome.runtime.sendMessage(message);
-
-        if ('error' in response) {
-            throw new Error(response.error);
-        }
-
-        // At this point, response is the success type
-        const { ok, status, statusText, headers, body } = response;
-
-        // Return a Response-like object
-        return /** @type {Response} */ (/** @type {unknown} */ ({
-            ok,
-            status,
-            statusText,
-            headers: {
-                get: (/** @type {string} */ name) => headers[name.toLowerCase()] || null
-            },
-            text: async () => body,
-            json: async () => JSON.parse(body),
-            blob: async () => {
-                // Parse base64 if needed, or create blob from text
-                if (body.startsWith('data:')) {
-                    const res = await fetch(body);
-                    return res.blob();
-                }
-                const bytes = new Uint8Array(body.length);
-                for (let i = 0; i < body.length; i++) {
-                    bytes[i] = body.charCodeAt(i);
-                }
-                return new Blob([bytes]);
-            }
-        }));
-    } catch (e) {
-        // If messaging fails, fall back to regular fetch
-        return fetch(url, options);
+    /** @type {RequestFetchMessage} */
+    const message = {
+        action: 'requestFetch',
+        url,
+        options: options ? {
+            method: options.method,
+            headers: /** @type {Record<string, string>} */ (options.headers),
+            credentials: options.credentials
+        } : undefined
+    };
+    /** @type {RequestFetchResponse} */
+    const response = await chrome.runtime.sendMessage(message);
+    if ('error' in response) throw new Error(response.error);
+    const { status, statusText, headers, body } = response;
+    let decoded = /** @type {BodyInit | null} */ (body);
+    if (body.startsWith('data:')) {
+        const encoded = /^data:[^,]*;base64,([\s\S]*)$/.exec(body);
+        if (!encoded) throw new Error('Invalid Discover background response encoding');
+        decoded = Uint8Array.from(atob(encoded[1]), char => char.charCodeAt(0));
     }
+    if ([204, 205, 304].includes(status)) decoded = null;
+    return new Response(decoded, { status, statusText, headers });
 }
 
 /**
@@ -95,6 +67,89 @@ async function smartFetch(url, options) {
 const PORTAL_BASE_URL = 'https://portal.discover.com';
 const CARD_BASE_URL = 'https://card.discover.com';
 const BANK_BASE_URL = 'https://bank.discover.com';
+
+/** @param {any} value */
+function isObject(value) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** @param {Response} response @returns {Promise<any>} */
+async function cardJson(response) {
+    const text = await response.text();
+    let data = JSON.parse(text.replace(/^\)\]\}',?\s*/, ''));
+    if (!isObject(data)) throw new Error('Invalid Discover card response');
+    if (data.errorCode != null && data.errorCode !== '') throw new Error('Discover card request failed');
+    if (Object.prototype.hasOwnProperty.call(data, 'jsonResponse')) {
+        if (typeof data.jsonResponse !== 'string') throw new Error('Invalid Discover card response');
+        data = JSON.parse(data.jsonResponse);
+    }
+    if (!isObject(data)) throw new Error('Invalid Discover card response');
+    if (data.errorCode != null && data.errorCode !== '') throw new Error('Discover card request failed');
+    return data;
+}
+
+/** @param {unknown} value @returns {string} */
+function calendarDate(value) {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        throw new Error('Invalid Discover statement date');
+    }
+    const date = new Date(`${value}T00:00:00.000Z`);
+    if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== value) {
+        throw new Error('Invalid Discover statement date');
+    }
+    return date.toISOString();
+}
+
+/** @param {unknown} value @returns {string} */
+function cardDate(value) {
+    if (typeof value !== 'string' || !/^\d{8}$/.test(value)) throw new Error('Invalid Discover statement date');
+    return calendarDate(`${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`);
+}
+
+/**
+ * @param {unknown} value
+ * @param {string} origin
+ * @returns {URL}
+ */
+function statementLink(value, origin) {
+    if (typeof value !== 'string' || !value.trim()) throw new Error('Invalid Discover statement link');
+    let url;
+    try {
+        url = new URL(value, origin);
+    } catch (error) {
+        if (error instanceof TypeError) throw new Error('Invalid Discover statement link');
+        throw error;
+    }
+    if (url.origin !== origin || url.username || url.password || url.hash) {
+        throw new Error('Invalid Discover statement link');
+    }
+    return url;
+}
+
+/**
+ * @param {unknown} value
+ * @param {string} accountId
+ * @returns {string}
+ */
+function bankStatementLink(value, accountId) {
+    const url = statementLink(value, BANK_BASE_URL);
+    const prefix = `/bank/deposits/servicing/documents/v1/accounts/${encodeURIComponent(accountId)}/statements/`;
+    if (!url.pathname.startsWith(prefix) || !url.pathname.slice(prefix.length) ||
+        url.pathname.slice(prefix.length).includes('/')) {
+        throw new Error('Invalid Discover statement link');
+    }
+    return url.href;
+}
+
+/** @param {Response} response @returns {Promise<Blob>} */
+async function pdfBlob(response) {
+    if (response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/pdf') {
+        throw new Error('Response is not a PDF file');
+    }
+    const blob = await response.blob();
+    if (await blob.slice(0, 5).text() !== '%PDF-') throw new Error('Response is not a PDF file');
+    return blob;
+}
 
 /**
  * Get the current session ID from cookies
@@ -319,24 +374,24 @@ async function getCardStatements(account) {
             throw new Error(`API request failed: ${recentResponse.status} ${recentResponse.statusText}`);
         }
 
-        // Strip security prefix ")]}', " before parsing JSON
-        const recentText = await recentResponse.text();
-        const cleanedRecentText = recentText.replace(/^\)\]\}',\s*/, '');
-        const recentData = JSON.parse(cleanedRecentText);
-
-        if (!recentData.summaryData || !recentData.summaryData.lastStmtDate) {
+        const recentData = await cardJson(recentResponse);
+        if (!isObject(recentData.summaryData)) throw new Error('Invalid Discover recent statement response');
+        const lastStmtDate = recentData.summaryData.lastStmtDate;
+        if (lastStmtDate === undefined || lastStmtDate === null || lastStmtDate === '') {
             // No statements available
             return [];
         }
 
         // Parse the statement date (format: MM/DD/YYYY) to get stmtDate parameter
-        const dateMatch = recentData.summaryData.lastStmtDate.match(/(\d{2})\/(\d{2})\/(\d{4})/);
+        const dateMatch = typeof lastStmtDate === 'string' &&
+            lastStmtDate.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
         if (!dateMatch) {
-            throw new Error(`Invalid statement date format: ${recentData.summaryData.lastStmtDate}`);
+            throw new Error('Invalid Discover statement date');
         }
 
         const [, month, day, year] = dateMatch;
         const stmtDate = `${year}${month}${day}`; // YYYYMMDD format
+        cardDate(stmtDate);
 
         // Get the full list of statements
         const stmtResponse = await smartFetch(
@@ -353,37 +408,27 @@ async function getCardStatements(account) {
             throw new Error(`Statement list API request failed: ${stmtResponse.status} ${stmtResponse.statusText}`);
         }
 
-        // Strip security prefix ")]}', " before parsing JSON
-        const stmtText = await stmtResponse.text();
-        const cleanedText = stmtText.replace(/^\)\]\}',\s*/, '');
-        const outerData = JSON.parse(cleanedText);
+        const stmtData = await cardJson(stmtResponse);
 
-        // The actual data is in jsonResponse field as a string that needs to be parsed again
-        const stmtData = JSON.parse(outerData.jsonResponse);
-
-        if (!stmtData.statements || !Array.isArray(stmtData.statements)) {
-            // No statements available
-            return [];
-        }
+        if (!Array.isArray(stmtData.statements)) throw new Error('Invalid Discover statement list response');
 
         // Parse each statement and extract the date from pdfUri
         const statements = [];
         for (const stmt of stmtData.statements) {
-            if (!stmt.pdfAvailable || !stmt.pdfUri) {
-                continue;
-            }
+            if (!isObject(stmt) || typeof stmt.pdfAvailable !== 'boolean') throw new Error('Invalid Discover statement entry');
+            if (!stmt.pdfAvailable) continue;
+            if (typeof stmt.pdfUri !== 'string' || !stmt.pdfUri) throw new Error('Invalid Discover statement PDF link');
 
-            // Extract date from pdfUri: /cardmembersvcs/statements/app/stmtPDF?view=true&date=20251020
-            const dateParam = stmt.pdfUri.match(/date=(\d{8})/);
-            if (!dateParam) {
-                continue;
+            const pdfUrl = statementLink(stmt.pdfUri, CARD_BASE_URL);
+            if (pdfUrl.pathname !== '/cardmembersvcs/statements/app/stmtPDF' ||
+                pdfUrl.searchParams.getAll('date').length !== 1 ||
+                pdfUrl.searchParams.getAll('view').length !== 1 || pdfUrl.searchParams.get('view') !== 'true' ||
+                [...pdfUrl.searchParams.keys()].some(key => key !== 'date' && key !== 'view')) {
+                throw new Error('Invalid Discover statement PDF link');
             }
-
-            const statementId = dateParam[1]; // YYYYMMDD format
-            const year = statementId.substring(0, 4);
-            const month = statementId.substring(4, 6);
-            const day = statementId.substring(6, 8);
-            const statementDate = new Date(`${year}-${month}-${day}`).toISOString();
+            const dateParam = pdfUrl.searchParams.get('date');
+            const statementDate = cardDate(dateParam);
+            const statementId = /** @type {string} */ (dateParam);
 
             statements.push({
                 account,
@@ -392,7 +437,7 @@ async function getCardStatements(account) {
             });
         }
 
-        return statements;
+        return statements.sort((a, b) => b.statementDate.localeCompare(a.statementDate));
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(message);
@@ -428,18 +473,28 @@ async function getBankStatements(account) {
 
         const statements = [];
         for (const stmt of data) {
-            if (stmt.id && stmt.statementDate) {
-                // Use the pre-encoded URL from links as the statement ID
-                const downloadUrl = stmt.links?.find((/** @type {any} */ l) => l.rel === 'binary')?.href;
-                statements.push({
-                    account,
-                    statementId: downloadUrl || stmt.id, // Use download URL if available, fallback to ID
-                    statementDate: new Date(stmt.statementDate).toISOString(),
-                });
+            if (!isObject(stmt) || typeof stmt.id !== 'string' || !stmt.id.trim() || typeof stmt.statementDate !== 'string') {
+                throw new Error('Invalid Discover bank statement');
             }
+            calendarDate(stmt.statementDate.slice(0, 10));
+            const date = new Date(stmt.statementDate);
+            if (!Number.isFinite(date.getTime())) throw new Error('Invalid Discover statement date');
+            if (stmt.links !== undefined && (!Array.isArray(stmt.links) ||
+                stmt.links.some((/** @type {any} */ link) => !isObject(link) || typeof link.rel !== 'string' || !link.rel.trim()))) {
+                throw new Error('Invalid Discover statement links');
+            }
+            // Preserve the bank's already encoded download link.
+            const binaryLinks = stmt.links?.filter((/** @type {any} */ link) => link.rel === 'binary') || [];
+            if (binaryLinks.length > 1) throw new Error('Invalid Discover statement links');
+            const downloadUrl = binaryLinks.length ? bankStatementLink(binaryLinks[0].href, account.accountId) : undefined;
+            statements.push({
+                account,
+                statementId: downloadUrl || stmt.id,
+                statementDate: date.toISOString(),
+            });
         }
 
-        return statements;
+        return statements.sort((a, b) => b.statementDate.localeCompare(a.statementDate));
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(message);
@@ -469,6 +524,7 @@ export async function getStatements(account) {
  */
 async function downloadCardStatement(statement) {
     try {
+        cardDate(statement.statementId);
         // Set the dfsedskey cookie to specify which account
         document.cookie = `dfsedskey=${statement.account.accountId}; path=/; domain=.discover.com`;
 
@@ -487,11 +543,7 @@ async function downloadCardStatement(statement) {
             throw new Error(`PDF download failed: ${response.status} ${response.statusText}`);
         }
 
-        if (!response.headers.get('content-type')?.includes('pdf')) {
-            throw new Error('Response is not a PDF file');
-        }
-
-        return await response.blob();
+        return await pdfBlob(response);
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(message);
@@ -505,14 +557,16 @@ async function downloadCardStatement(statement) {
  */
 async function downloadBankStatement(statement) {
     try {
-        // If statement ID is a full URL, use it directly
+        if (typeof statement.statementId !== 'string' || !statement.statementId.trim()) {
+            throw new Error('Invalid Discover statement identifier');
+        }
         let url;
-        if (statement.statementId.startsWith('http://') || statement.statementId.startsWith('https://')) {
-            url = statement.statementId;
+        if (/^https?:\/\//.test(statement.statementId) || statement.statementId.startsWith('/')) {
+            url = bankStatementLink(statement.statementId, statement.account.accountId);
         } else {
             // Fallback: construct URL with encoded statement ID
             const encodedStatementId = encodeURIComponent(statement.statementId);
-            url = `${BANK_BASE_URL}/bank/deposits/servicing/documents/v1/accounts/${statement.account.accountId}/statements/${encodedStatementId}`;
+            url = `${BANK_BASE_URL}/bank/deposits/servicing/documents/v1/accounts/${encodeURIComponent(statement.account.accountId)}/statements/${encodedStatementId}`;
         }
 
         const response = await fetch(url, {
@@ -527,11 +581,7 @@ async function downloadBankStatement(statement) {
             throw new Error(`PDF download failed: ${response.status} ${response.statusText}`);
         }
 
-        if (!response.headers.get('content-type')?.includes('pdf')) {
-            throw new Error('Response is not a PDF file');
-        }
-
-        return await response.blob();
+        return await pdfBlob(response);
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         throw new Error(`Failed to download bank statement: ${message}`);

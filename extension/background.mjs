@@ -108,7 +108,7 @@ async function handleFetchRequest(fetchMessage) {
     });
 
     // For binary data (like PDFs), convert to base64
-    const contentType = response.headers.get('content-type') || '';
+    const contentType = (response.headers.get('content-type') || '').toLowerCase();
     let body;
     if (contentType.includes('pdf') || contentType.includes('octet-stream')) {
         const blob = await response.blob();
