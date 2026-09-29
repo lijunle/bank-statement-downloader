@@ -1,14 +1,65 @@
 # Discover Bank Analysis
 
-**Analysis as of:** 2025-12-03
+**Analysis as of:** 2026-09-29
 
 ## Overview
 
 **Bank ID**: discover
 **Bank Name**: Discover Bank
 **Bank URL**: https://www.discover.com
-**HAR File**: `analyze/discover_1763506982047.har`
-**HAR File Size**: 5.31 MB (181 entries)
+
+Historical examples below use placeholders or synthetic data. References to a
+historical capture describe provenance only; no raw capture is stored or needed
+to use this API reference.
+## Current investigation scope and evidence
+
+The authenticated portal returned a card and checking account from
+`/enterprise/portal/customeraccountinfo/v1/summary`. Following the bank's **View
+Activity** card link issued the documented recent-transactions API and
+`/enterprise/navigation-api/v1/customer/info/card?selAcct=<account-key>`.
+The latter includes the selected CARD account plus a BANK account in `accounts`;
+do not ignore `selectedAccount` when interpreting the historical opposite-type
+arrays.
+
+The card UI's current statement and a selected historical statement used
+`/cardmembersvcs/statements/app/v2/current` and
+`/cardmembersvcs/statements/app/v2/stmt?stmtDate=<YYYYMMDD>` respectively. Both
+returned a direct JSON object with `statements`, `quickLinks`, `quarterlyStatements`,
+`summaryData`, and `postedTransactionData`. The sixty-nine entries in the observed
+list have PDF availability. The historical requirement to unconditionally parse
+`jsonResponse` a second time no longer describes these observed responses.
+
+The bank's **Previous Statements > PDF** link opens `stmtPDF?view=true&date=...`
+in Chrome's PDF viewer. Its HTTP-200 PDF was saved locally from that viewer.
+The document's account suffix and printed `MM/DD/YYYY` closing date agree with
+the bank's selected account and statement. This is card-side source evidence,
+not a claim that the extension or checking flow has been validated.
+
+After reauthentication, the bank's **Activity > Statements & Tax Documents**
+page loaded normally. Its existing documents API returned thirty-nine checking
+statements with `name`, offset-bearing `statementDate`, opaque `id`, and `links`
+for `self`, `binary`, and `thumbnail`. The selected BANK account comes from
+`customer/info/bank?id=<account-id>` and the opposite-type CARD remains in
+`accounts`. The latest bank-UI PDF uses its exact `binary` link and prints the
+month-end in `Mon DD, YYYY` form. The earlier bank technical-difficulty/login
+redirect is not evidence of an extension defect.
+
+The exercised extension requests from both card and bank pages returned the
+wrapped card-list shape (`previousStatementInputVO` plus string `jsonResponse`),
+while the bank UI requests described above returned the direct shape. Support
+both envelopes rather than inferring one universal representation.
+
+The banking statement response requested from the card page explicitly allowed
+`https://card.discover.com` via CORS with credentials. Therefore the historical
+claim that bank statement APIs are always domain-locked is not current evidence.
+The extension's card cross-origin requests use its background worker; bank
+requests remain direct. Full cross-domain download acceptance is still required
+separately from these successful list requests.
+
+Only the available credit card and checking products are in scope. Multiple
+cards, savings, other products, cross-user switching, and retention guarantees
+remain unverified. Do not treat every observed cookie/header as individually
+required or a transport failure as proof that an account type is absent.
 
 ### Observed Account Types and History
 
@@ -26,74 +77,69 @@ Discover Bank operates across **three main domains**:
 
 #### Cross-Domain API Access
 
-**Important**: Both **card domain** and **bank domain** can directly call **portal domain APIs**.
+The exercised card and bank pages can directly call portal APIs with credentials.
+These observations do not establish a universal CORS policy for every endpoint.
 
 **Card Domain** (`card.discover.com`) -> Portal APIs:
 
 - CORS headers: `Access-Control-Allow-Origin: https://card.discover.com`
 - Credentials allowed: `Access-Control-Allow-Credentials: true`
 - Example calls from card homepage:
-  - `https://portal.discover.com/enterprise/navigation-api/v1/customer/info/card?selAcct=8472916503`
-  - `https://portal.discover.com/enterprise/navigation-api/v1/messages/card/messageCount?selAcct=8472916503`
-  - `https://portal.discover.com/enterprise/navigation-api/v1/navigation/card?selAcct=8472916503`
+  - `https://portal.discover.com/enterprise/navigation-api/v1/customer/info/card?selAcct=<card-id>`
+  - `https://portal.discover.com/enterprise/navigation-api/v1/messages/card/messageCount?selAcct=<card-id>`
+  - `https://portal.discover.com/enterprise/navigation-api/v1/navigation/card?selAcct=<card-id>`
 
 **Bank Domain** (`bank.discover.com`) -> Portal APIs:
 
 - CORS headers: `Access-Control-Allow-Origin: https://bank.discover.com`
 - Credentials allowed: `Access-Control-Allow-Credentials: true`
 - Example calls from bank account page:
-  - `https://portal.discover.com/enterprise/navigation-api/v1/customer/info/bank?id=BK58371624`
-  - `https://portal.discover.com/enterprise/navigation-api/v1/messages/bank/messageCount?id=BK58371624`
-  - `https://portal.discover.com/enterprise/navigation-api/v1/navigation/bank?id=BK58371624`
+  - `https://portal.discover.com/enterprise/navigation-api/v1/customer/info/bank?id=<bank-id>`
+  - `https://portal.discover.com/enterprise/navigation-api/v1/messages/bank/messageCount?id=<bank-id>`
+  - `https://portal.discover.com/enterprise/navigation-api/v1/navigation/bank?id=<bank-id>`
 
 **Implementation Note**: The extension can use portal domain APIs from both card and bank domain pages for unified access to account lists and profile information.
 
 #### Domain-Specific Statement APIs
 
-**Critical**: Statement APIs are **domain-locked** and cannot be accessed cross-origin:
+Use the observed routing for each API rather than assuming all statement APIs are
+domain-locked:
 
 - **Credit Card Statements**: Must be accessed from `card.discover.com`
 
   - API: `https://card.discover.com/cardissuer/statements/transactions/v1/recent`
   - API: `https://card.discover.com/cardmembersvcs/statements/app/v2/stmt`
-  - Cannot be called from `portal.discover.com` or `bank.discover.com` due to CORS restrictions
+  - The extension routes cross-origin card requests through its background worker.
 
-- **Bank Account Statements**: Must be accessed from `bank.discover.com`
+- **Bank Account Statements**: Hosted on `bank.discover.com`
   - API: `https://bank.discover.com/bank/deposits/servicing/documents/v1/accounts/{accountId}/statements`
-  - Cannot be called from `portal.discover.com` or `card.discover.com` due to CORS restrictions
+  - The current response explicitly allows credentialed requests from the card origin.
 
-**User Requirement**: Users can work from any Discover domain (portal, card, or bank). The extension automatically handles cross-domain API calls.
+Only the scoped card and checking flows establish current behavior; other origins,
+products and lifecycle transitions require separate verification.
 
 #### Implementation Strategy
 
 **Cross-Domain Request Handling**:
 
 - Content script detects when it's on wrong domain for an API call
-- Uses `chrome.runtime.sendMessage()` to forward request to popup script
-- Popup script executes the fetch (bypasses CORS as popup has higher privileges)
+- Uses `chrome.runtime.sendMessage()` to forward card requests to the background worker
+- The background worker executes the fetch using the extension's existing permissions
 - Response (including binary PDF data) is returned via message passing
-- Seamless user experience without requiring domain navigation
+- A worker/transport failure is surfaced, not retried silently from the page
 
 **Smart Fetch Architecture**:
 
 - `smartFetch()` function detects current domain and target API domain
 - If domains match: Use native `fetch()` for best performance
-- If domains mismatch: Automatically route through `fetchViaPopup()` using message passing
+- For card-domain mismatch: Route through `fetchViaPopup()` using message passing
 - Works transparently for both statements API and PDF downloads
 
-**Domain Detection Logic**:
+**Routing summary**:
 
 ```javascript
-function smartFetch(url, options) {
-  const targetDomain = new URL(url).hostname;
-  const currentDomain = window.location.hostname;
-
-  if (targetDomain === currentDomain) {
-    return fetch(url, options); // Direct fetch
-  }
-
-  return fetchViaPopup(url, options); // Via chrome.runtime.sendMessage
-}
+// Card APIs use smartFetch: same-domain fetch or background requestFetch.
+// Bank APIs use credentialed native fetch, including from the tested card origin.
 ```
 
 **Error Handling in UI**:
@@ -106,7 +152,7 @@ function smartFetch(url, options) {
 
 - Statements are cached for 15 minutes in chrome.storage.session
 - User can work from any Discover domain (portal, card, or bank)
-- Downloads work seamlessly regardless of current domain
+- A cached list does not prove a new cross-origin download works
 - Cross-domain fetching handled automatically by extension architecture
 
 ---
@@ -130,11 +176,11 @@ Discover Bank uses multiple cookies for authentication and session management.
 #### Cookie Examples
 
 ```
-customerId=e7f42c8d33a5b6091f82ee47c19385a2
-cif=5839204716
-sectoken=83MXVNFR7K2YQ94GTW5P301AZ9
-dcsession=RX-wkT3UGr5TnXEK9qU0XFe4HTU7yskhzge (HttpOnly)
-REQID=73148394-86d8-6g8d-d326-4fb325g72cd-3985728105814 (HttpOnly)
+customerId=<customer-id>
+cif=<cif>
+sectoken=<security-token>
+dcsession=<http-only-session> (HttpOnly)
+REQID=<request-id> (HttpOnly)
 ```
 
 #### Cookie Attributes
@@ -197,7 +243,8 @@ Observed in the referenced HAR:
 
 ### Recommended Approach: Portal Domain APIs
 
-**Strategy**: Call BOTH portal APIs and combine responses to get complete profile + all accounts.
+**Strategy**: The module calls both portal APIs and combines selected and other
+accounts. Both were available in the exercised two-product session.
 
 **API Endpoints**:
 
@@ -240,32 +287,32 @@ Cookie: customerId=...; cif=...; dcsession=...; sectoken=...; [other cookies]
 
 ```json
 {
-  "id": "73519284",
-  "username": "johndoe123",
+  "id": "<profile-id>",
+  "username": "<username>",
   "isPIIUpdateEligible": true,
   "name": {
-    "givenName": "JOHN",
-    "familyName": "DOE",
-    "formatted": "JOHN DOE"
+    "givenName": "TEST",
+    "familyName": "USER",
+    "formatted": "TEST USER"
   },
-  "email": "johndoe@example.com",
+  "email": "user@example.test",
   "phoneNumbers": {
     "home": {
       "category": "home",
       "countryCode": "1",
-      "number": "7183526940",
+      "number": "<phone-number>",
       "cell": true,
-      "formatted": "718-352-6940"
+      "formatted": "<formatted-phone>"
     }
   },
   "addresses": {
     "Home": {
       "category": "Home",
-      "streetAddress": "8523 SW 41ST BLVD",
-      "locality": "PORTLAND",
+      "streetAddress": "<street-address>",
+      "locality": "<city>",
       "region": "OR",
-      "postalCode": "972153864",
-      "formatted": "8523 SW 41ST BLVD\nPORTLAND OR 97215-3864\nUSA"
+      "postalCode": "<postal-code>",
+      "formatted": "<street-address>\n<city> OR <formatted-postal-code>\nUSA"
     }
   }
 }
@@ -307,19 +354,19 @@ Cookie: [session cookies]
 ```json
 {
   "profile": {
-    "name": "DOE,JOHN",
-    "email": "johndoe@example.com",
-    "homePhoneNumber": "7183526940",
+    "name": "USER,TEST",
+    "email": "user@example.test",
+    "homePhoneNumber": "<phone-number>",
     "workPhoneNumber": "0000000000",
     "mobilePhoneNumber": null
   },
   "hasClosedBankAccount": false,
   "accounts": [
     {
-      "accountId": "BK58371624",
+      "accountId": "<bank-id>",
       "accountType": "BANK",
-      "accountDesc": "Discover Checking W",
-      "lastFourAccountNumber": "7036",
+      "accountDesc": "Synthetic Checking",
+      "lastFourAccountNumber": "5678",
       "currentBalance": "1.02"
     }
   ]
@@ -331,18 +378,18 @@ Cookie: [session cookies]
 ```json
 {
   "profile": {
-    "name": "JOHN DOE",
-    "email": "johndoe@example.com",
-    "homePhoneNumber": "7183526940",
+    "name": "TEST USER",
+    "email": "user@example.test",
+    "homePhoneNumber": "<phone-number>",
     "workPhoneNumber": "0000000000",
     "mobilePhoneNumber": null
   },
   "accounts": [
     {
-      "accountId": "8472916503",
+      "accountId": "<card-id>",
       "accountType": "CARD",
       "accountDesc": "Discover it Card",
-      "lastFourAccountNumber": "4271",
+      "lastFourAccountNumber": "1234",
       "currentBalance": "000"
     }
   ]
@@ -356,7 +403,9 @@ Cookie: [session cookies]
 - `/customer/info/card?` returns BANK accounts (only if user has bank accounts)
 - `/customer/info/bank?` returns CARD accounts (only if user has credit cards)
 
-**To get ALL accounts**: Call BOTH APIs and combine the `accounts` arrays.
+Combine both `selectedAccount` and `accounts` from successful responses and
+deduplicate by account ID. The opposite-type arrays alone omit the selected
+account in a single-response view.
 
 #### Important Caveat
 
@@ -365,7 +414,10 @@ Cookie: [session cookies]
 - If the user does **not have a credit card**, the `/customer/info/card?` endpoint may not return a valid response or may return empty accounts
 - If the user does **not have a bank account**, the `/customer/info/bank?` endpoint may not return a valid response or may return empty accounts
 
-**Implementation**: Always call both APIs and handle cases where one or both may fail or return empty account lists. Check response status and validate the accounts array.
+The existing implementation tolerates one failed portal request if the other
+returns usable information. That historical compatibility behavior is not proof
+that a failed request means an absent product; completeness under a partial outage
+has not been established.
 
 #### Important Fields
 
@@ -411,9 +463,11 @@ async function getProfileAndAccounts() {
         }
       : null,
     accounts: [
+      ...(cardData.selectedAccount ? [cardData.selectedAccount] : []),
+      ...(bankData.selectedAccount ? [bankData.selectedAccount] : []),
       ...(cardData.accounts || []), // BANK accounts (if user has them)
       ...(bankData.accounts || []), // CARD accounts (if user has them)
-    ],
+    ], // Deduplicate by accountId before returning the shared account list.
   };
 }
 ```
@@ -458,14 +512,20 @@ Returns BANK accounts:
 
 ```json
 {
-  "profile": { ... },
+  "profile": { "name": "TEST USER", "email": "user@example.test" },
+  "selectedAccount": {
+    "accountId": "<card-id>",
+    "accountType": "CARD",
+    "accountDesc": "Synthetic Card",
+    "lastFourAccountNumber": "1234"
+  },
   "accounts": [
     {
-      "accountId": "BK58371624",
+      "accountId": "<bank-id>",
       "accountType": "BANK",
-      "accountDesc": "Discover Checking W",
+      "accountDesc": "Synthetic Checking",
       "accountSubType": "002",
-      "lastFourAccountNumber": "7036",
+      "lastFourAccountNumber": "5678",
       "currentBalance": "1.02",
       "availableBalance": "1.02",
       "accountStatus": "none"
@@ -480,13 +540,20 @@ Returns CARD accounts:
 
 ```json
 {
-  "profile": { ... },
+  "profile": { "name": "TEST USER", "email": "user@example.test" },
+  "selectedAccount": {
+    "accountId": "<bank-id>",
+    "accountType": "BANK",
+    "accountDesc": "Synthetic Checking",
+    "accountSubType": "002",
+    "lastFourAccountNumber": "5678"
+  },
   "accounts": [
     {
-      "accountId": "8472916503",
+      "accountId": "<card-id>",
       "accountType": "CARD",
       "accountDesc": "Discover it Card",
-      "lastFourAccountNumber": "4271",
+      "lastFourAccountNumber": "1234",
       "currentBalance": "000",
       "creditLineAvailable": "3700",
       "accountStatus": "none"
@@ -541,9 +608,11 @@ async function getAllAccounts() {
       : { accounts: [] };
 
   return [
+    ...(cardData.selectedAccount ? [cardData.selectedAccount] : []),
+    ...(bankData.selectedAccount ? [bankData.selectedAccount] : []),
     ...(cardData.accounts || []), // BANK accounts (if user has them)
     ...(bankData.accounts || []), // CARD accounts (if user has them)
-  ];
+  ]; // Deduplicate by accountId before returning the shared account list.
 }
 ```
 
@@ -587,9 +656,9 @@ Observed in the referenced HAR:
 {
   "accounts": [
     {
-      "id": "BK58371624",
-      "accountNumber": "7036",
-      "nickname": "Discover Checking W",
+      "id": "<bank-id>",
+      "accountNumber": "5678",
+      "nickname": "Synthetic Checking",
       "type": "checking",
       "balance": {
         "current": 1.02,
@@ -597,10 +666,10 @@ Observed in the referenced HAR:
       },
       "links": {
         "activity": {
-          "href": "https://bank.discover.com/api/accounts/BK58371624/activity"
+          "href": "https://bank.discover.com/api/accounts/<bank-id>/activity"
         },
         "statements": {
-          "href": "https://bank.discover.com/api/accounts/BK58371624/statements"
+          "href": "https://bank.discover.com/api/accounts/<bank-id>/statements"
         }
       }
     }
@@ -627,7 +696,7 @@ Discover Bank has **different statement APIs for credit cards vs. bank accounts*
 ##### HTTP Headers
 
 ```http
-GET /cardissuer/statements/transactions/v1/recent?source=achome&transOnly=Y&selAcct=8472916503 HTTP/1.1
+GET /cardissuer/statements/transactions/v1/recent?source=achome&transOnly=Y&selAcct=<card-id> HTTP/1.1
 Host: card.discover.com
 Accept: application/json
 Cookie: [session cookies]
@@ -639,12 +708,14 @@ Cookie: [session cookies]
 
 - `source` (required): `achome` or `stmt` (context/source page)
 - `transOnly` (required): `Y` (transactions only mode)
-- `selAcct` (required): Account key from account list API (e.g., "8472916503")
+- `selAcct` (required): Account key from account list API (e.g., "<card-id>")
 
 **Parameter Source**:
 
 - `selAcct` comes from **Task 3 (List All Accounts)** API
-  - Field: `customerAccountSummaryVO.cardSummaryVO.cardAccounts[].acctKey`
+  - Field: portal `selectedAccount.accountId` or `accounts[].accountId` for CARD.
+    The dashboard summary's `cardSummaryVO.cardAccounts[].acctKey` is the
+    corresponding account selector.
 
 ##### Response Structure
 
@@ -654,16 +725,16 @@ Cookie: [session cookies]
   "statements": null,
   "summaryData": {
     "totalPostedTransactions": "0.00",
-    "totalPostedPaymentsAndCredits": "-34.87",
+    "totalPostedPaymentsAndCredits": "-10.00",
     "totalRunningBalance": "0.00",
     "activityStartDate": "10/21/2025",
-    "previousBalance": "34.87",
-    "lastStmtBal": "34.87",
+    "previousBalance": "10.00",
+    "lastStmtBal": "10.00",
     "lastStmtDate": "10/20/2025",
     "currentBalance": "0.00"
   },
   "combinedTransactionData": {
-    "combinedTransactions": [ ... ]
+    "combinedTransactions": []
   }
 }
 ```
@@ -680,7 +751,7 @@ Cookie: [session cookies]
 Observed in the referenced HAR:
 
 - HTTP Method: GET
-- Query Parameters: source=achome, transOnly=Y, selAcct=8472916503
+- Query Parameters: source=achome, transOnly=Y, selAcct=<card-id>
 - Response: 200 OK with statement date "10/20/2025"
 
 #### Statement List API (Recommended for Historical Statements)
@@ -733,9 +804,11 @@ Observed in the referenced HAR:
 
 ##### Response Format - Critical Implementation Details
 
-**Security Prefix**: Both the `/recent` and `/v2/stmt` APIs include a security prefix `)]}'` before the JSON data to prevent CSRF attacks.
+**Security Prefix**: Historical and current responses may include an anti-JSON-
+hijacking prefix `)]}'` with an optional comma before the JSON. This is not a
+substitute for session authentication or a general CSRF protection guarantee.
 
-**Double-Wrapped JSON**: The `/v2/stmt` API response has a nested structure:
+**Response Variants**: The extension request's `/v2/stmt` response can be nested:
 
 ```javascript
 // Outer layer (after stripping )]}', prefix)
@@ -748,19 +821,23 @@ Observed in the referenced HAR:
 JSON.parse(outerData.jsonResponse) // Returns the statements object
 ```
 
-**Implementation Requirements**:
+**Parsing Requirements**:
 
 1. Strip `)]}'` prefix from response text before parsing
-2. Parse outer JSON to get `jsonResponse` field
-3. Parse `jsonResponse` string to get actual statement data
+2. Parse the JSON object and reject explicit business errors
+3. If `jsonResponse` is present, require a string and parse its object; otherwise
+   use the direct object. Require an explicit `statements` array.
 
 **Example Code**:
 
 ```javascript
 const text = await response.text();
-const cleaned = text.replace(/^\)\]\}',\s*/, "");
+const cleaned = text.replace(/^\)\]\}',?\s*/, "");
 const outer = JSON.parse(cleaned);
-const data = JSON.parse(outer.jsonResponse); // Now has statements[] array
+const data = Object.prototype.hasOwnProperty.call(outer, "jsonResponse")
+  ? JSON.parse(outer.jsonResponse)
+  : outer;
+// Validate both envelopes, business error fields, and the statements array.
 ```
 
 ##### Captured Evidence
@@ -784,7 +861,7 @@ Observed in the referenced HAR:
 ##### HTTP Headers
 
 ```http
-GET /bank/deposits/servicing/documents/v1/accounts/BK58371624/statements HTTP/1.1
+GET /bank/deposits/servicing/documents/v1/accounts/<bank-id>/statements HTTP/1.1
 Host: bank.discover.com
 Accept: application/json
 Accept-Encoding: gzip, deflate, br, zstd
@@ -796,7 +873,7 @@ Cookie: [session cookies]
 
 **Path Parameters**:
 
-- `accountId` (required): Account ID from account list API (e.g., "BK58371624")
+- `accountId` (required): Account ID from account list API (e.g., "<bank-id>")
 
 **Query Parameters**: None
 **Request Body**: None
@@ -813,23 +890,23 @@ Cookie: [session cookies]
   {
     "name": "October 2025",
     "statementDate": "2025-10-31T00:00:00-0400",
-    "id": "bankprod2|5839204716|20251031~4~STM~BK58371624~OC~00082947~~~~~|202511031623-bankstmt-oc1|00A3F72B00041956",
+    "id": "bankprod2|<cif>|20251031~4~STM~<bank-id>~OC~<document-sequence>~~~~~|<document-batch>|<document-reference>",
     "links": [
       {
         "rel": "self",
-        "href": "https://bank.discover.com/bank/deposits/servicing/documents/v1/accounts/BK58371624/statements/bankprod2%7C5839204716%7C20251031~4~STM~BK58371624~OC~00082947~~~~~%7C202511031623-bankstmt-oc1%7C00A3F72B00041956"
+        "href": "https://bank.discover.com/bank/deposits/servicing/documents/v1/accounts/<bank-id>/statements/bankprod2%7C<cif>%7C20251031~4~STM~<bank-id>~OC~<document-sequence>~~~~~%7C<document-batch>%7C<document-reference>"
       },
       {
         "rel": "binary",
-        "href": "https://bank.discover.com/bank/deposits/servicing/documents/v1/accounts/BK58371624/statements/bankprod2%7C5839204716%7C20251031~4~STM~BK58371624~OC~00082947~~~~~%7C202511031623-bankstmt-oc1%7C00A3F72B00041956"
+        "href": "https://bank.discover.com/bank/deposits/servicing/documents/v1/accounts/<bank-id>/statements/bankprod2%7C<cif>%7C20251031~4~STM~<bank-id>~OC~<document-sequence>~~~~~%7C<document-batch>%7C<document-reference>"
       }
     ]
   },
   {
     "name": "September 2025",
     "statementDate": "2025-09-30T00:00:00-0400",
-    "id": "bankprod2|5839204716|20250930~4~STM~BK58371624~OC~00083651~~~~~|202510021312-bankstmt-oc1|00B4G83C00052067",
-    "links": [ ... ]
+    "id": "bankprod2|<cif>|20250930~4~STM~<bank-id>~OC~<document-sequence>~~~~~|<document-batch>|<document-reference>",
+    "links": []
   }
 ]
 ```
@@ -838,23 +915,23 @@ Cookie: [session cookies]
 
 - `name`: Human-readable statement name (e.g., "October 2025")
 - `statementDate`: ISO 8601 formatted date (e.g., "2025-10-31T00:00:00-0400")
-- `id`: **Encoded statement identifier** (required for download in Task 5)
+- `id`: Opaque statement identifier (encode once when constructing a download URL)
 - `links[rel="binary"].href`: Direct download URL for the PDF file
 
 **Statement ID Format**: Complex pipe-separated string containing:
 
 - Environment (e.g., "bankprod2")
-- CIF number (e.g., "5839204716")
-- Date and metadata (e.g., "20251031~4~STM~BK58371624~OC~00082947~~~~~")
-- Timestamp (e.g., "202511031623-bankstmt-oc1")
-- Hash/reference (e.g., "00A3F72B00041956")
+- CIF number (e.g., "<cif>")
+- Date and metadata (e.g., "20251031~4~STM~<bank-id>~OC~<document-sequence>~~~~~")
+- Timestamp (e.g., "<document-batch>")
+- Hash/reference (e.g., "<document-reference>")
 
 ##### Captured Evidence
 
 Observed in the referenced HAR:
 
 - HTTP Method: GET
-- Path Parameter: BK58371624
+- Path Parameter: <bank-id>
 - Response: 200 OK with array of statement objects
 
 ---
@@ -877,7 +954,7 @@ Discover Bank has **different download APIs for credit cards vs. bank accounts**
 GET /cardmembersvcs/statements/app/stmtPDF?view=true&date=20251020 HTTP/1.1
 Host: card.discover.com
 Accept: application/pdf, */*
-Cookie: dfsedskey=8472916503; [other session cookies]
+Cookie: dfsedskey=<card-id>; [other session cookies]
 ```
 
 ##### Request Parameters
@@ -890,7 +967,7 @@ Cookie: dfsedskey=8472916503; [other session cookies]
 **Cookie Requirements**:
 
 - `dfsedskey` (required): Account key/ID that identifies which credit card account to download the statement for
-  - Example: `dfsedskey=8472916503`
+  - Example: `dfsedskey=<card-id>`
   - This cookie determines which account's statement will be returned
 
 **Parameter Source**:
@@ -938,7 +1015,7 @@ Observed in the referenced HAR:
 
 - HTTP Method: GET
 - Query Parameters: view=true, date=20251020
-- Cookie: dfsedskey=8472916503 (identifies the account)
+- Cookie: dfsedskey=<card-id> (identifies the account)
 - Response: 200 OK
 - Content-Type: application/pdf
 
@@ -972,7 +1049,7 @@ Observed in the referenced HAR:
 ##### HTTP Headers
 
 ```http
-GET /bank/deposits/servicing/documents/v1/accounts/BK58371624/statements/bankprod2%7C5839204716%7C20251031~4~STM~BK58371624~OC~00082947~~~~~%7C202511031623-bankstmt-oc1%7C00A3F72B00041956 HTTP/1.1
+GET /bank/deposits/servicing/documents/v1/accounts/<bank-id>/statements/bankprod2%7C<cif>%7C20251031~4~STM~<bank-id>~OC~<document-sequence>~~~~~%7C<document-batch>%7C<document-reference> HTTP/1.1
 Host: bank.discover.com
 Accept: application/pdf, */*
 Accept-Encoding: gzip, deflate, br, zstd
@@ -984,8 +1061,8 @@ Cookie: [session cookies]
 
 **Path Parameters**:
 
-- `accountId` (required): Account ID (e.g., "BK58371624")
-- `statementId` (required): **URL-encoded statement ID** (e.g., "bankprod2%7C5839204716%7C20251031~4~STM~BK58371624~OC~00082947~~~~~%7C202511031623-bankstmt-oc1%7C00A3F72B00041956")
+- `accountId` (required): Account ID (e.g., "<bank-id>")
+- `statementId` (required): **URL-encoded statement ID** (e.g., "bankprod2%7C<cif>%7C20251031~4~STM~<bank-id>~OC~<document-sequence>~~~~~%7C<document-batch>%7C<document-reference>")
 
 **Query Parameters**: None
 **Request Body**: None
@@ -1012,13 +1089,13 @@ Cookie: [session cookies]
 **Raw Statement ID**:
 
 ```
-bankprod2|5839204716|20251031~4~STM~BK58371624~OC~00082947~~~~~|202511031623-bankstmt-oc1|00A3F72B00041956
+bankprod2|<cif>|20251031~4~STM~<bank-id>~OC~<document-sequence>~~~~~|<document-batch>|<document-reference>
 ```
 
 **URL-Encoded Statement ID**:
 
 ```
-bankprod2%7C5839204716%7C20251031~4~STM~BK58371624~OC~00082947~~~~~%7C202511031623-bankstmt-oc1%7C00A3F72B00041956
+bankprod2%7C<cif>%7C20251031~4~STM~<bank-id>~OC~<document-sequence>~~~~~%7C<document-batch>%7C<document-reference>
 ```
 
 ##### Captured Evidence
@@ -1026,7 +1103,7 @@ bankprod2%7C5839204716%7C20251031~4~STM~BK58371624~OC~00082947~~~~~%7C2025110316
 Observed in the referenced HAR:
 
 - HTTP Method: GET
-- Path Parameters: accountId=BK58371624, statementId=bankprod2%7C5839204716%7C20251031~4~STM~BK58371624~OC~00082947~~~~~%7C202511031623-bankstmt-oc1%7C00A3F72B00041956
+- Path Parameters: accountId=<bank-id>, statementId=bankprod2%7C<cif>%7C20251031~4~STM~<bank-id>~OC~<document-sequence>~~~~~%7C<document-batch>%7C<document-reference>
 - Response: 200 OK
 - Content-Type: application/pdf
 
@@ -1039,7 +1116,7 @@ The statement list API (Task 4) provides direct download URLs in the response:
   "links": [
     {
       "rel": "binary",
-      "href": "https://bank.discover.com/bank/deposits/servicing/documents/v1/accounts/BK58371624/statements/bankprod2%7C5839204716%7C20251031~4~STM~BK58371624~OC~00082947~~~~~%7C202511031623-bankstmt-oc1%7C00A3F72B00041956"
+      "href": "https://bank.discover.com/bank/deposits/servicing/documents/v1/accounts/<bank-id>/statements/bankprod2%7C<cif>%7C20251031~4~STM~<bank-id>~OC~<document-sequence>~~~~~%7C<document-batch>%7C<document-reference>"
     }
   ]
 }
@@ -1051,7 +1128,7 @@ You can directly use the `href` from `links[rel="binary"]` without manually cons
 
 ## API Endpoint Summary
 
-Endpoints observed in the HAR file `discover_1763506982047.har`:
+Endpoints observed in the HAR file `<private-historical-capture>`:
 
 | Task | API Endpoint | Method | Response |
 | ---- | ------------ | ------ | -------- |
@@ -1067,13 +1144,15 @@ Endpoints observed in the HAR file `discover_1763506982047.har`:
 
 ### Domain-Specific Notes
 
-Due to CORS restrictions, APIs are domain-specific:
+API hosts and the currently exercised routing are:
 
 - **portal.discover.com**: Account list, navigation, customer info
 - **card.discover.com**: Credit card transactions and statements
 - **bank.discover.com**: Bank account transactions and statements
 
-The browser extension must detect the current domain and use appropriate APIs for that domain.
+The module uses a background request for cross-origin card calls and direct fetch
+for bank calls. The current card-to-bank list response explicitly allows that
+origin; do not infer a blanket CORS restriction from the endpoint host.
 
 ---
 
@@ -1093,8 +1172,8 @@ Task 5 (Download PDFs)
 
 ### Key Identifiers
 
-- **Credit Card**: Use `acctKey` (e.g., "8472916503")
-- **Bank Account**: Use `acctId` (e.g., "BK58371624")
+- **Credit Card**: Use `acctKey` (e.g., "<card-id>")
+- **Bank Account**: Use `acctId` (e.g., "<bank-id>")
 - **Statement Date (Card)**: YYYYMMDD format (e.g., "20251020")
 - **Statement ID (Bank)**: Complex encoded string with pipes (must URL-encode)
 
@@ -1120,107 +1199,30 @@ function getCurrentDomain() {
 
 ---
 
-## Implementation Summary
+## Shared contract and failure handling
 
-### Completed Implementation (discover.mjs)
+- Profile identity/display remain `profile.email` and `profile.name` from the
+  portal responses. The existing cookie/session and partial portal-response
+  behavior is unchanged; a transport failure does not prove a product is absent.
+- Accounts include `selectedAccount` and `accounts` from both responses,
+  deduplicated by `accountId`. The current checking subtype is `002`; other
+  mappings remain historical compatibility behavior.
+- Card statement IDs are validated `YYYYMMDD` values from `pdfUri`; dates use UTC
+  midnight. Keep explicit `pdfAvailable: false` exclusions, but reject malformed
+  available rows, invalid dates, missing arrays, or explicit business failures.
+- Bank statement IDs retain the exact encoded binary link when provided,
+  otherwise the opaque ID is encoded for download. Reject incomplete rows and
+  invalid calendar components instead of silently returning a partial list.
+- The background message response is reconstructed as a real `Response`; PDF
+  data URLs are decoded locally without another network request. Worker failures
+  propagate rather than silently falling back to native cross-origin fetch.
+- Both downloads require `application/pdf` and a `%PDF-` prefix. These runtime
+  guards do not replace full parsing, rendering and identity/period checks.
 
-#### Key Features Implemented
+## Remaining scope limits
 
-1. **Multi-Statement Support**
-
-   - Changed from returning single statement to returning full history (63 statements from 2019-2025)
-   - Uses `/v2/stmt` API to retrieve complete statement list
-   - Parses double-wrapped JSON response with security prefix
-
-2. **Security Prefix Handling**
-
-   - Both `/recent` and `/v2/stmt` APIs return `)]}'` prefix before JSON
-   - Implementation strips prefix before parsing: `text.replace(/^\)\]\}',\s*/, '')`
-   - Applied to both API calls to prevent JSON parsing errors
-
-3. **Double-Wrapped JSON Parsing**
-
-   - `/v2/stmt` response has nested structure with `jsonResponse` field
-   - Implementation:
-     ```javascript
-     const outer = JSON.parse(cleanedText);
-     const data = JSON.parse(outer.jsonResponse);
-     ```
-
-4. **Cross-Domain Request Handling**
-
-   - `smartFetch()`: Detects domain mismatch and automatically routes through popup
-   - `fetchViaPopup()`: Uses `chrome.runtime.sendMessage()` for cross-domain API calls
-   - Works seamlessly from any Discover domain (portal, card, or bank)
-   - Handles both JSON responses and binary PDF downloads via message passing
-   - Binary data converted to base64 data URLs for message passing, then back to Blob
-
-5. **Bidirectional Messaging Architecture**
-
-   - Content script → Popup: `chrome.runtime.sendMessage({ action: 'requestFetch', url, options })`
-   - Popup executes fetch and converts binary data to base64 if needed
-   - Popup → Content script: Returns `{ ok, status, statusText, headers, body }`
-   - Content script converts base64 data URL back to Blob for PDF downloads
-   - Type-safe message passing using TypeScript discriminated unions
-
-6. **Error Message Propagation**
-   - Removed redundant error message prefixes in bank module
-   - Popup shows errors at top of statement list (not inline)
-   - Clear, actionable error messages displayed to users
-   - No more "wrong domain" errors - cross-domain requests handled automatically
-
-#### API Integration
-
-**Profile & Accounts (Works from any domain)**:
-
-- Uses portal.discover.com APIs
-- Calls both `/customer/info/card?` and `/customer/info/bank?` in parallel
-- Combines results to get all accounts (credit card + bank)
-
-**Credit Card Statements (Works from any domain via smartFetch)**:
-
-- Two-step process:
-  1. Call `/recent` API to get last statement date
-  2. Call `/v2/stmt?stmtDate={date}` to get full statement list
-- Handles security prefix and double-wrapped JSON
-- Uses `smartFetch()` to automatically handle domain mismatches via popup messaging
-- Returns array of Statement objects with statementId (YYYYMMDD) and statementDate
-
-**Bank Statements (Works from any domain)**:
-
-- Single API call to `/accounts/{accountId}/statements`
-- Uses pre-encoded URLs from HATEOAS links for downloads
-- Returns array of Statement objects
-
-**Downloads (Work from any domain via smartFetch)**:
-
-- Credit card: Uses `smartFetch()` + sets `dfsedskey` cookie
-- Bank: Uses direct `fetch()` (no domain restrictions)
-- Binary PDF data handled via base64 encoding in message passing when cross-domain
-- Seamless experience regardless of which Discover domain user is on
-
-### Known Limitations
-
-1. **None - Cross-Domain Support Implemented**
-
-   - Extension works from any Discover domain (portal, card, or bank)
-   - `smartFetch()` automatically detects domain mismatches
-   - Cross-domain requests routed through popup via `chrome.runtime.sendMessage()`
-   - Seamless user experience with no manual domain navigation required
-
-2. **CORS Restrictions (Bypassed)**
-   - Portal APIs work across domains (explicit CORS headers)
-   - Statement APIs are domain-locked but handled via popup messaging
-   - Chrome extension popup context has higher privileges and bypasses CORS
-   - Binary PDF downloads work via base64 encoding in message passing
-
----
-
-## Handoff Information
-
-**Bank ID**: discover
-**Bank Name**: Discover Bank
-**Bank URL**: https://www.discover.com
-**Analysis File**: `analyze/discover.md`
-**HAR File**: `analyze/discover_1763506982047.har`
-**HAR File Size**: 5.31 MB (181 entries)
+The observed session has one card and one checking account. Savings, multiple
+cards, tax/year-end/transaction exports, retention guarantees, and authentication
+or cross-user lifecycle behavior remain unverified. In particular, do not claim
+that setting the card-selection cookie is safe for concurrent requests across
+multiple cards without separate evidence.

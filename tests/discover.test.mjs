@@ -2,8 +2,7 @@
  * Unit tests for Discover Bank API implementation
  * Tests cover both credit card and bank account functionality
  * 
- * Note: All mock data is based on actual content from analyze/discover.har
- * to ensure tests match real API responses.
+ * Fixtures use synthetic values with the documented response shapes.
  */
 
 import { describe, it, beforeEach, mock } from 'node:test';
@@ -635,6 +634,68 @@ describe('Discover API', () => {
                 /API request failed: 500 Internal Server Error/
             );
         });
+
+        it('accepts direct and wrapped card statement objects with either security prefix', async () => {
+            window.location.hostname = 'card.discover.com';
+            for (const prefix of ['', ")]}'\n", ")]}', "]) {
+                for (const wrapped of [false, true]) {
+                    const list = { statements: [{ pdfAvailable: true, pdfUri: '/cardmembersvcs/statements/app/stmtPDF?view=true&date=20000229' }] };
+                    mockFetch.mock.mockImplementation(async url => ({
+                        ok: true,
+                        text: async () => prefix + JSON.stringify(url.includes('/recent')
+                            ? { errorCode: null, summaryData: { lastStmtDate: '02/29/2000' } }
+                            : wrapped ? { jsonResponse: JSON.stringify(list) } : list),
+                    }));
+                    assert.equal((await getStatements(testCardAccount))[0].statementDate, '2000-02-29T00:00:00.000Z');
+                }
+            }
+        });
+
+        it('rejects malformed card response envelopes instead of returning no statements', async () => {
+            window.location.hostname = 'card.discover.com';
+            for (const recent of [{ errorCode: 'SESSION_EXPIRED' }, {}, { summaryData: null }]) {
+                mockFetch.mock.mockImplementation(async () => ({ ok: true, text: async () => JSON.stringify(recent) }));
+                await assert.rejects(getStatements(testCardAccount), /Discover.*response|Discover.*failed/);
+            }
+            for (const list of [{}, { statements: null }, { statements: [null] }]) {
+                mockFetch.mock.mockImplementation(async url => ({
+                    ok: true,
+                    text: async () => JSON.stringify(url.includes('/recent')
+                        ? { summaryData: { lastStmtDate: '02/29/2000' } }
+                        : { jsonResponse: JSON.stringify(list) }),
+                }));
+                await assert.rejects(getStatements(testCardAccount), /Discover.*response|Invalid.*statement/);
+            }
+        });
+
+        it('rejects impossible recent and PDF statement dates without normalization', async () => {
+            window.location.hostname = 'card.discover.com';
+            for (const recentDate of ['02/30/2000', '02/29/2001', 'prefix02/29/2000']) {
+                mockFetch.mock.mockImplementation(async url => ({
+                    ok: true,
+                    text: async () => JSON.stringify(url.includes('/recent')
+                        ? { summaryData: { lastStmtDate: recentDate } }
+                        : { jsonResponse: JSON.stringify({ statements: [] }) }),
+                }));
+                await assert.rejects(getStatements(testCardAccount), /Invalid.*statement date/);
+            }
+            mockFetch.mock.mockImplementation(async url => ({
+                ok: true,
+                text: async () => JSON.stringify(url.includes('/recent')
+                    ? { summaryData: { lastStmtDate: '02/29/2000' } }
+                    : { jsonResponse: JSON.stringify({ statements: [{ pdfAvailable: true, pdfUri: '/cardmembersvcs/statements/app/stmtPDF?view=true&date=20000230' }] }) }),
+            }));
+            await assert.rejects(getStatements(testCardAccount), /Invalid.*statement date/);
+        });
+
+        it('does not hide background transport errors by retrying native fetch', async () => {
+            mockSendMessage.mock.mockImplementation(async () => ({ error: 'Synthetic transport error' }));
+            mockFetch.mock.mockImplementation(async () => ({
+                ok: true, text: async () => JSON.stringify({ summaryData: {} }),
+            }));
+            await assert.rejects(getStatements(testCardAccount), /Synthetic transport error/);
+            assert.equal(mockFetch.mock.calls.length, 0);
+        });
     });
 
     describe('getStatements - Bank Account', () => {
@@ -740,6 +801,15 @@ describe('Discover API', () => {
                 /Invalid response format: expected array of statements/
             );
         });
+
+        it('rejects malformed bank rows instead of silently returning a partial list', async () => {
+            for (const row of [{}, null, { id: 'synthetic-id' }, { id: {}, statementDate: '2000-02-29' }]) {
+                mockFetch.mock.mockImplementation(async () => ({ ok: true, json: async () => [
+                    { id: 'valid', statementDate: '2000-02-29' }, row,
+                ] }));
+                await assert.rejects(getStatements(testBankAccount), /Invalid.*statement/);
+            }
+        });
     });
 
     describe('downloadStatement - Credit Card', () => {
@@ -767,8 +837,8 @@ describe('Discover API', () => {
             window.location.hostname = 'portal.discover.com';
 
             // Simulate base64 encoded PDF data
-            const base64Data = 'data:application/pdf;base64,UERGIGNvbnRlbnQ=';
-            const mockPdfBlob = new Blob(['PDF content'], { type: 'application/pdf' });
+            const content = '%PDF-1.7\nsynthetic document';
+            const base64Data = `data:application/pdf;base64,${btoa(content)}`;
 
             // Mock chrome.runtime.sendMessage to simulate popup handling the fetch
             mockSendMessage.mock.mockImplementationOnce((message) => {
@@ -784,20 +854,12 @@ describe('Discover API', () => {
                 return Promise.reject(new Error('Unexpected message'));
             });
 
-            // Mock fetch for data URL conversion (used by blob() in fetchViaPopup)
-            mockFetch.mock.mockImplementationOnce((url) => {
-                if (url === base64Data) {
-                    return Promise.resolve({
-                        ok: true,
-                        blob: () => Promise.resolve(mockPdfBlob),
-                    });
-                }
-                return Promise.reject(new Error('Unexpected fetch URL'));
-            });
-
             const blob = await downloadStatement(testCardStatement);
 
             assert.ok(blob instanceof Blob);
+            assert.equal(await blob.text(), content);
+            assert.equal(blob.type, 'application/pdf');
+            assert.equal(mockFetch.mock.calls.length, 0);
 
             // Verify chrome.runtime.sendMessage was called
             assert.strictEqual(mockSendMessage.mock.calls.length, 1);
@@ -807,7 +869,7 @@ describe('Discover API', () => {
         it('should download credit card statement PDF', async () => {
             window.location.hostname = 'card.discover.com';
 
-            const mockPdfBlob = new Blob(['PDF content'], { type: 'application/pdf' });
+            const mockPdfBlob = new Blob(['%PDF-1.7\nsynthetic document'], { type: 'application/pdf' });
 
             mockFetch.mock.mockImplementationOnce(() =>
                 Promise.resolve({
@@ -830,6 +892,46 @@ describe('Discover API', () => {
 
             // Verify cookie was set
             assert.ok(document.cookie.includes('dfsedskey=CARD123'));
+        });
+
+        it('preserves binary bytes through the real background bridge with mixed-case PDF MIME', async t => {
+            const originalChrome = global.chrome;
+            const originalFileReader = global.FileReader;
+            t.after(() => {
+                global.chrome = originalChrome;
+                if (originalFileReader === undefined) delete global.FileReader;
+                else global.FileReader = originalFileReader;
+            });
+            let handleMessage;
+            global.chrome = {
+                runtime: {
+                    onMessage: { addListener: listener => { handleMessage = listener; } },
+                    sendMessage: message => new Promise(resolve => handleMessage(message, {}, resolve)),
+                },
+                tabs: {
+                    query: async options => options.active ? [{ id: 1 }] : [],
+                    onUpdated: { addListener() {} },
+                    onActivated: { addListener() {} },
+                },
+            };
+            global.FileReader = class {
+                async readAsDataURL(blob) {
+                    this.result = `data:${blob.type};base64,${Buffer.from(await blob.arrayBuffer()).toString('base64')}`;
+                    this.onloadend();
+                }
+            };
+            await import('../extension/background.mjs?discover-binary-roundtrip');
+            const bytes = new Uint8Array([...new TextEncoder().encode('%PDF-1.7\n'), ...Array.from({ length: 256 }, (_, i) => i)]);
+            for (const mime of ['application/pdf', 'Application/PDF', 'APPLICATION/PDF; charset=binary']) {
+                mockFetch.mock.mockImplementation(async () => new Response(bytes, { headers: { 'content-type': mime } }));
+                const blob = await downloadStatement(testCardStatement);
+                assert.deepEqual(new Uint8Array(await blob.arrayBuffer()), bytes);
+            }
+            mockFetch.mock.mockImplementation(async () => new Response('{"message":"synthetic"}', {
+                headers: { 'content-type': 'application/json' },
+            }));
+            const json = await chrome.runtime.sendMessage({ action: 'requestFetch', url: 'https://card.discover.com/synthetic' });
+            assert.equal(json.body, '{"message":"synthetic"}');
         });
 
         it('should handle PDF download errors', async () => {
@@ -891,7 +993,7 @@ describe('Discover API', () => {
         };
 
         it('should download bank statement PDF using full URL', async () => {
-            const mockPdfBlob = new Blob(['PDF content'], { type: 'application/pdf' });
+            const mockPdfBlob = new Blob(['%PDF-1.7\nsynthetic document'], { type: 'application/pdf' });
 
             mockFetch.mock.mockImplementationOnce(() =>
                 Promise.resolve({
@@ -913,7 +1015,7 @@ describe('Discover API', () => {
         });
 
         it('should construct URL when statement ID is not a full URL', async () => {
-            const mockPdfBlob = new Blob(['PDF content'], { type: 'application/pdf' });
+            const mockPdfBlob = new Blob(['%PDF-1.7\nsynthetic document'], { type: 'application/pdf' });
 
             const simpleStatement = {
                 account: testBankAccount,
@@ -970,6 +1072,23 @@ describe('Discover API', () => {
                 () => downloadStatement(testBankStatement),
                 /Failed to download bank statement: Response is not a PDF file/
             );
+        });
+
+        it('rejects non-PDF bodies and misleading PDF MIME types on either download flow', async () => {
+            window.location.hostname = 'card.discover.com';
+            for (const type of ['Checking', 'CreditCard']) {
+                for (const [content, mime] of [['<html>Login</html>', 'application/pdf'], ['%PDF-1.7\nsynthetic', 'application/not-pdf'], ['', 'application/pdf']]) {
+                    mockFetch.mock.mockImplementation(async () => ({
+                        ok: true, headers: new Headers({ 'content-type': mime }),
+                        blob: async () => new Blob([content], { type: mime }),
+                    }));
+                    await assert.rejects(downloadStatement({
+                        account: { ...testBankAccount, accountType: type },
+                        statementId: type === 'CreditCard' ? '20000229' : testBankStatement.statementId,
+                        statementDate: '2000-02-29T00:00:00.000Z',
+                    }), /PDF/);
+                }
+            }
         });
     });
 });

@@ -48,6 +48,10 @@ The background service worker routes requests and manages the in-memory session 
 - `clearCache` - Invalidate all cached data
 - `requestFetch` - Handle cross-origin requests for content scripts
 
+`requestFetch` normalizes Content-Type case before identifying PDF or octet-stream
+responses for base64 data-URL transport. Binary bytes must not be decoded as text;
+other response bodies retain the text transport.
+
 ### 2. Popup (`extension/popup.mjs`)
 
 The popup provides the user interface for viewing accounts and downloading statements:
