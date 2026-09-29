@@ -106,6 +106,41 @@ function cardDate(value) {
     return calendarDate(`${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`);
 }
 
+/**
+ * @param {unknown} value
+ * @param {string} origin
+ * @returns {URL}
+ */
+function statementLink(value, origin) {
+    if (typeof value !== 'string' || !value.trim()) throw new Error('Invalid Discover statement link');
+    let url;
+    try {
+        url = new URL(value, origin);
+    } catch (error) {
+        if (error instanceof TypeError) throw new Error('Invalid Discover statement link');
+        throw error;
+    }
+    if (url.origin !== origin || url.username || url.password || url.hash) {
+        throw new Error('Invalid Discover statement link');
+    }
+    return url;
+}
+
+/**
+ * @param {unknown} value
+ * @param {string} accountId
+ * @returns {string}
+ */
+function bankStatementLink(value, accountId) {
+    const url = statementLink(value, BANK_BASE_URL);
+    const prefix = `/bank/deposits/servicing/documents/v1/accounts/${encodeURIComponent(accountId)}/statements/`;
+    if (!url.pathname.startsWith(prefix) || !url.pathname.slice(prefix.length) ||
+        url.pathname.slice(prefix.length).includes('/')) {
+        throw new Error('Invalid Discover statement link');
+    }
+    return url.href;
+}
+
 /** @param {Response} response @returns {Promise<Blob>} */
 async function pdfBlob(response) {
     if (response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/pdf') {
@@ -341,14 +376,15 @@ async function getCardStatements(account) {
 
         const recentData = await cardJson(recentResponse);
         if (!isObject(recentData.summaryData)) throw new Error('Invalid Discover recent statement response');
-        if (!recentData.summaryData.lastStmtDate) {
+        const lastStmtDate = recentData.summaryData.lastStmtDate;
+        if (lastStmtDate === undefined || lastStmtDate === null || lastStmtDate === '') {
             // No statements available
             return [];
         }
 
         // Parse the statement date (format: MM/DD/YYYY) to get stmtDate parameter
-        const dateMatch = typeof recentData.summaryData.lastStmtDate === 'string' &&
-            recentData.summaryData.lastStmtDate.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+        const dateMatch = typeof lastStmtDate === 'string' &&
+            lastStmtDate.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
         if (!dateMatch) {
             throw new Error('Invalid Discover statement date');
         }
@@ -383,8 +419,14 @@ async function getCardStatements(account) {
             if (!stmt.pdfAvailable) continue;
             if (typeof stmt.pdfUri !== 'string' || !stmt.pdfUri) throw new Error('Invalid Discover statement PDF link');
 
-            // Extract date from pdfUri: /cardmembersvcs/statements/app/stmtPDF?view=true&date=20251020
-            const dateParam = new URL(stmt.pdfUri, CARD_BASE_URL).searchParams.get('date');
+            const pdfUrl = statementLink(stmt.pdfUri, CARD_BASE_URL);
+            if (pdfUrl.pathname !== '/cardmembersvcs/statements/app/stmtPDF' ||
+                pdfUrl.searchParams.getAll('date').length !== 1 ||
+                pdfUrl.searchParams.getAll('view').length !== 1 || pdfUrl.searchParams.get('view') !== 'true' ||
+                [...pdfUrl.searchParams.keys()].some(key => key !== 'date' && key !== 'view')) {
+                throw new Error('Invalid Discover statement PDF link');
+            }
+            const dateParam = pdfUrl.searchParams.get('date');
             const statementDate = cardDate(dateParam);
             const statementId = /** @type {string} */ (dateParam);
 
@@ -437,10 +479,14 @@ async function getBankStatements(account) {
             calendarDate(stmt.statementDate.slice(0, 10));
             const date = new Date(stmt.statementDate);
             if (!Number.isFinite(date.getTime())) throw new Error('Invalid Discover statement date');
-            if (stmt.links !== undefined && !Array.isArray(stmt.links)) throw new Error('Invalid Discover statement links');
+            if (stmt.links !== undefined && (!Array.isArray(stmt.links) ||
+                stmt.links.some((/** @type {any} */ link) => !isObject(link) || typeof link.rel !== 'string' || !link.rel.trim()))) {
+                throw new Error('Invalid Discover statement links');
+            }
             // Preserve the bank's already encoded download link.
-            const downloadUrl = stmt.links?.find((/** @type {any} */ l) => l?.rel === 'binary')?.href;
-            if (downloadUrl !== undefined && (typeof downloadUrl !== 'string' || !downloadUrl)) throw new Error('Invalid Discover statement link');
+            const binaryLinks = stmt.links?.filter((/** @type {any} */ link) => link.rel === 'binary') || [];
+            if (binaryLinks.length > 1) throw new Error('Invalid Discover statement links');
+            const downloadUrl = binaryLinks.length ? bankStatementLink(binaryLinks[0].href, account.accountId) : undefined;
             statements.push({
                 account,
                 statementId: downloadUrl || stmt.id,
@@ -511,14 +557,16 @@ async function downloadCardStatement(statement) {
  */
 async function downloadBankStatement(statement) {
     try {
-        // If statement ID is a full URL, use it directly
+        if (typeof statement.statementId !== 'string' || !statement.statementId.trim()) {
+            throw new Error('Invalid Discover statement identifier');
+        }
         let url;
-        if (statement.statementId.startsWith('http://') || statement.statementId.startsWith('https://')) {
-            url = statement.statementId;
+        if (/^https?:\/\//.test(statement.statementId) || statement.statementId.startsWith('/')) {
+            url = bankStatementLink(statement.statementId, statement.account.accountId);
         } else {
             // Fallback: construct URL with encoded statement ID
             const encodedStatementId = encodeURIComponent(statement.statementId);
-            url = `${BANK_BASE_URL}/bank/deposits/servicing/documents/v1/accounts/${statement.account.accountId}/statements/${encodedStatementId}`;
+            url = `${BANK_BASE_URL}/bank/deposits/servicing/documents/v1/accounts/${encodeURIComponent(statement.account.accountId)}/statements/${encodedStatementId}`;
         }
 
         const response = await fetch(url, {

@@ -1210,9 +1210,18 @@ function getCurrentDomain() {
 - Card statement IDs are validated `YYYYMMDD` values from `pdfUri`; dates use UTC
   midnight. Keep explicit `pdfAvailable: false` exclusions, but reject malformed
   available rows, invalid dates, missing arrays, or explicit business failures.
+  Missing, null, or empty-string `lastStmtDate` values retain the historical
+  no-statement behavior; boolean or numeric values are malformed, not empty.
+  Reduce a card link to a date ID only for the supported HTTPS card-origin
+  `stmtPDF` path with a single `view=true` and date parameter. Reject exports,
+  other origins/paths, duplicate parameters, and unknown query selectors rather
+  than substituting a monthly statement for a different document.
 - Bank statement IDs retain the exact encoded binary link when provided,
-  otherwise the opaque ID is encoded for download. Reject incomplete rows and
-  invalid calendar components instead of silently returning a partial list.
+  resolving same-origin relative paths to full URLs. A binary link must belong
+  to the selected account's statement route. Only the absence of a binary entry
+  permits the opaque-ID fallback; malformed entries, blank hrefs and duplicate
+  binary entries are errors. Reject incomplete rows and invalid calendar components
+  instead of silently returning a partial list.
 - The background message response is reconstructed as a real `Response`; PDF
   data URLs are decoded locally without another network request. Worker failures
   propagate rather than silently falling back to native cross-origin fetch.

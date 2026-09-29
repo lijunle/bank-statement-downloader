@@ -562,6 +562,28 @@ describe('Discover API', () => {
             assert.strictEqual(statements.length, 0);
         });
 
+        it('rejects invalid falsy recent dates rather than returning no statements', async () => {
+            window.location.hostname = 'card.discover.com';
+            for (const lastStmtDate of [false, 0, true, [], {}]) {
+                const callsBefore = mockFetch.mock.calls.length;
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true, text: async () => JSON.stringify({ summaryData: { lastStmtDate } }),
+                }));
+                await assert.rejects(getStatements(testCardAccount), /Invalid Discover statement date/);
+                assert.equal(mockFetch.mock.calls.length, callsBefore + 1);
+            }
+        });
+
+        it('preserves explicit empty recent date sentinels without requesting a list', async () => {
+            window.location.hostname = 'card.discover.com';
+            for (const summaryData of [{}, { lastStmtDate: null }, { lastStmtDate: '' }]) {
+                const callsBefore = mockFetch.mock.calls.length;
+                mockFetch.mock.mockImplementation(async () => ({ ok: true, text: async () => JSON.stringify({ summaryData }) }));
+                assert.deepEqual(await getStatements(testCardAccount), []);
+                assert.equal(mockFetch.mock.calls.length, callsBefore + 1);
+            }
+        });
+
         it('should retrieve card statements with valid dates', async () => {
             window.location.hostname = 'card.discover.com';
 
@@ -696,6 +718,38 @@ describe('Discover API', () => {
             await assert.rejects(getStatements(testCardAccount), /Synthetic transport error/);
             assert.equal(mockFetch.mock.calls.length, 0);
         });
+
+        it('rejects unsupported card PDF targets instead of substituting a monthly document', async () => {
+            window.location.hostname = 'card.discover.com';
+            for (const pdfUri of [
+                '/cardmembersvcs/statements/app/stmt.pdf?date=20000229&printOption=transactions',
+                'https://example.test/cardmembersvcs/statements/app/stmtPDF?view=true&date=20000229',
+                'http://card.discover.com/cardmembersvcs/statements/app/stmtPDF?view=true&date=20000229',
+                '/cardmembersvcs/statements/app/stmtPDF?view=true&date=20000229&date=20000331',
+                '/cardmembersvcs/statements/app/stmtPDF?view=true&date=20000229&printOption=transactions',
+            ]) {
+                mockFetch.mock.mockImplementation(async url => ({
+                    ok: true,
+                    text: async () => JSON.stringify(url.includes('/recent')
+                        ? { summaryData: { lastStmtDate: '02/29/2000' } }
+                        : { statements: [{ pdfAvailable: true, pdfUri }] }),
+                }));
+                await assert.rejects(getStatements(testCardAccount), /Invalid Discover statement (PDF )?link/);
+            }
+        });
+
+        it('accepts relative and absolute standard card PDF links', async () => {
+            window.location.hostname = 'card.discover.com';
+            for (const prefix of ['', 'https://card.discover.com']) {
+                mockFetch.mock.mockImplementation(async url => ({
+                    ok: true,
+                    text: async () => JSON.stringify(url.includes('/recent')
+                        ? { summaryData: { lastStmtDate: '02/29/2000' } }
+                        : { statements: [{ pdfAvailable: true, pdfUri: `${prefix}/cardmembersvcs/statements/app/stmtPDF?view=true&date=20000229` }] }),
+                }));
+                assert.equal((await getStatements(testCardAccount))[0].statementId, '20000229');
+            }
+        });
     });
 
     describe('getStatements - Bank Account', () => {
@@ -808,6 +862,42 @@ describe('Discover API', () => {
                     { id: 'valid', statementDate: '2000-02-29' }, row,
                 ] }));
                 await assert.rejects(getStatements(testBankAccount), /Invalid.*statement/);
+            }
+        });
+
+        it('rejects malformed binary metadata instead of using the opaque-ID fallback', async () => {
+            const url = 'https://bank.discover.com/bank/deposits/servicing/documents/v1/accounts/BANK456/statements/stmt-1';
+            for (const links of [
+                [null], [42], [{}], [{ rel: 'binary' }], [{ rel: 'binary', href: ' ' }],
+                [{ rel: 'binary', href: 'not-a-document-url' }],
+                [{ rel: 'binary', href: url.replace('bank.discover.com', 'example.test') }],
+                [{ rel: 'binary', href: url.replace('BANK456', 'OTHER789') }],
+                [{ rel: 'binary', href: url }, { rel: 'binary', href: url }],
+            ]) {
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true, json: async () => [{ id: 'stmt-1', statementDate: '2000-02-29', links }],
+                }));
+                await assert.rejects(getStatements(testBankAccount), /Invalid Discover statement links?/);
+            }
+        });
+
+        it('uses opaque IDs only when a binary entry is absent', async () => {
+            for (const links of [undefined, [], [{ rel: 'self', href: 'https://bank.discover.com/synthetic' }]]) {
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true, json: async () => [{ id: 'synthetic|id', statementDate: '2000-02-29', links }],
+                }));
+                assert.equal((await getStatements(testBankAccount))[0].statementId, 'synthetic|id');
+            }
+        });
+
+        it('preserves encoded bank references and resolves supported relative links', async () => {
+            const path = '/bank/deposits/servicing/documents/v1/accounts/BANK456/statements/synthetic%7Creference%2Fone';
+            for (const href of [path, `https://bank.discover.com${path}`]) {
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true,
+                    json: async () => [{ id: 'synthetic|reference/one', statementDate: '2000-02-29', links: [{ rel: 'binary', href }] }],
+                }));
+                assert.equal((await getStatements(testBankAccount))[0].statementId, `https://bank.discover.com${path}`);
             }
         });
     });
@@ -1040,6 +1130,36 @@ describe('Discover API', () => {
             const calls = mockFetch.mock.calls;
             assert.strictEqual(calls.length, 1);
             assert.ok(calls[0].arguments[0].includes('BANK456/statements/stmt-123'));
+        });
+
+        it('rejects unsupported cached bank targets before fetching', async () => {
+            for (const statementId of [
+                ' ',
+                testBankStatement.statementId.replace('https:', 'http:'),
+                testBankStatement.statementId.replace('bank.discover.com', 'example.test'),
+                testBankStatement.statementId.replace('BANK456', 'OTHER789'),
+            ]) {
+                await assert.rejects(downloadStatement({ ...testBankStatement, statementId }),
+                    /Invalid Discover statement (link|identifier)/);
+            }
+            assert.equal(mockFetch.mock.calls.length, 0);
+        });
+
+        it('downloads a listed relative binary link without double-encoding the reference', async () => {
+            const path = '/bank/deposits/servicing/documents/v1/accounts/BANK456/statements/synthetic%7Cid%2Fpart?download=true';
+            const content = '%PDF-1.7\nsynthetic document';
+            let call = 0;
+            mockFetch.mock.mockImplementation(async () => ++call === 1 ? {
+                ok: true,
+                json: async () => [{
+                    id: 'synthetic|id/part', statementDate: '2000-02-29',
+                    links: [{ rel: 'binary', href: path }],
+                }],
+            } : new Response(content, { headers: { 'content-type': 'application/pdf' } }));
+            const [statement] = await getStatements(testBankAccount);
+            assert.equal(await (await downloadStatement(statement)).text(), content);
+            assert.equal(mockFetch.mock.calls.length, 2);
+            assert.equal(mockFetch.mock.calls[1].arguments[0], `https://bank.discover.com${path}`);
         });
 
         it('should handle download errors', async () => {
