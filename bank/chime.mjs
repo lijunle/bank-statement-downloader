@@ -16,6 +16,7 @@ const GRAPHQL_URL = 'https://app.chime.com/api/graphql';
 const HASHES = {
     UserQuery: 'md5:f4a5ebcc4103cf23f7e582af45b0edd0',
     HomeFeedAccountsQuery: 'md5:ca98a6f37e5df3c609f762c922dd5edb',
+    AccountInfoQuery: 'md5:e57adf8d54262ff92f7b952f3aac90b7',
     DocumentsQuery: 'md5:a17bd74480800ce36bfbc0c4b1516bae',
     GetMonthlyPdfStatementQuery: 'md5:409087bebf32f903eaab1e1498e1a724',
 };
@@ -54,11 +55,19 @@ async function graphQL(operationName, variables, hash) {
     }
 
     const json = /** @type {any} */(await resp.json());
-    if (!json || typeof json !== 'object' || json.errors) {
-        const msg = json?.errors?.map(/** @param {any} e */ e => e.message).join('; ') || 'Unknown error';
+    if (!isObject(json) || (json.errors !== undefined &&
+        (!Array.isArray(json.errors) || json.errors.length > 0)) || !isObject(json.data)) {
+        const msg = Array.isArray(json?.errors)
+            ? json.errors.map(/** @param {any} e */ e => typeof e?.message === 'string' ? e.message : 'Unknown error').join('; ')
+            : 'Unknown error';
         throw new Error(`Invalid GraphQL response for ${operationName}: ${msg}`);
     }
     return json;
+}
+
+/** @param {any} value @returns {boolean} */
+function isObject(value) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 /**
@@ -107,7 +116,8 @@ export function getSessionId() {
 export async function getProfile(sessionId) {
     try {
         const json = await graphQL('UserQuery', {}, HASHES.UserQuery);
-        const me = json?.data?.me || {};
+        const me = json.data.me;
+        if (!isObject(me)) throw new Error('Invalid Chime profile data');
         const cookies = getCookies();
         const profileId = cookies['chime_user_id'] || cookies['__Host-uid'] || sessionId;
         const first = (me.first_name || '').trim();
@@ -141,16 +151,23 @@ function mapAccountType(name) {
 export async function getAccounts(profile) {
     try {
         const json = await graphQL('HomeFeedAccountsQuery', {}, HASHES.HomeFeedAccountsQuery);
-        const root = json?.data?.user?.bank_account_v2 || {};
+        const root = json.data.user?.bank_account_v2;
+        if (!isObject(root)) throw new Error('Invalid Chime account data');
         const out = [];
 
         const primary = root.primary_funding_account;
         if (primary && primary.id) {
+            const info = await graphQL('AccountInfoQuery', {}, HASHES.AccountInfoQuery);
+            const details = info.data.me?.bank_account_v2?.primary_funding_account;
+            if (!isObject(details) || details.id !== primary.id ||
+                typeof details.account_number !== 'string' || !/^\d{4,}$/.test(details.account_number)) {
+                throw new Error('Invalid or mismatched Chime checking account details');
+            }
             out.push({
                 profile,
                 accountId: String(primary.id),
                 accountName: primary.account_name || 'Checking',
-                accountMask: String(primary.id).slice(-4),
+                accountMask: details.account_number.slice(-4),
                 accountType: mapAccountType(primary.account_name || 'Checking'),
             });
         }
@@ -190,14 +207,23 @@ export async function getStatements(account) {
     try {
         // Query all types, then match against this account's type bucket.
         const json = await graphQL('DocumentsQuery', { account_types: ['credit', 'checking', 'savings'] }, HASHES.DocumentsQuery);
-        const statementAccounts = json?.data?.statements?.statement_accounts || [];
+        const statementAccounts = json.data.statements?.statement_accounts;
+        if (!Array.isArray(statementAccounts) || statementAccounts.some(a => !isObject(a) || typeof a.account_type !== 'string')) {
+            throw new Error('Invalid Chime statement account list');
+        }
         const targetType = accountTypeToApi(account.accountType);
-        const bucket = statementAccounts.find(/** @param {any} a */ a => a.account_type === targetType);
-        const periods = bucket?.statement_periods || [];
+        const buckets = statementAccounts.filter(/** @param {any} a */ a => a.account_type === targetType);
+        if (buckets.length > 1) throw new Error('Ambiguous Chime statement accounts');
+        const periods = buckets.length ? buckets[0].statement_periods : [];
+        if (!Array.isArray(periods)) throw new Error('Invalid Chime statement periods');
         const out = [];
         for (const p of periods) {
-            if (!p || !p.id || !p.month || !p.year) continue;
-            const date = new Date(p.year, p.month - 1, 1).toISOString(); // First day of month
+            if (!isObject(p) || typeof p.id !== 'string' || !p.id.trim() ||
+                !Number.isInteger(p.month) || p.month < 1 || p.month > 12 ||
+                !Number.isInteger(p.year) || p.year < 1000 || p.year > 9999) {
+                throw new Error('Invalid statement period from Chime');
+            }
+            const date = new Date(Date.UTC(p.year, p.month - 1, 1)).toISOString();
             out.push({
                 account,
                 statementId: String(p.id),
@@ -221,23 +247,29 @@ export async function getStatements(account) {
 export async function downloadStatement(statement) {
     try {
         const date = new Date(statement.statementDate);
-        const month = date.getMonth() + 1;
-        const year = date.getFullYear();
+        if (!Number.isFinite(date.getTime())) throw new Error('Invalid Chime statement date');
+        const month = date.getUTCMonth() + 1;
+        const year = date.getUTCFullYear();
         const accountTypeApi = accountTypeToApi(statement.account.accountType);
         const json = await graphQL('GetMonthlyPdfStatementQuery', {
             account_types: [accountTypeApi],
             month,
             year,
         }, HASHES.GetMonthlyPdfStatementQuery);
-        const accounts = json?.data?.statements?.statement_accounts || [];
-        const acct = accounts.find(/** @param {any} a */ a => a?.monthly_pdf_statement?.encoded_pdf);
-        const b64 = acct?.monthly_pdf_statement?.encoded_pdf;
-        if (!b64) {
+        const accounts = json.data.statements?.statement_accounts;
+        if (!Array.isArray(accounts)) throw new Error('Invalid Chime PDF account list');
+        if (accounts.length > 1) throw new Error('Ambiguous Chime PDF accounts');
+        const b64 = accounts[0]?.monthly_pdf_statement?.encoded_pdf;
+        if (typeof b64 !== 'string' || !b64) {
             throw new Error('Encoded PDF not found in response');
         }
         // Decode base64 to binary
         const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-        return new Blob([bytes], { type: 'application/pdf' });
+        const blob = new Blob([bytes], { type: 'application/pdf' });
+        if (await blob.slice(0, 5).text() !== '%PDF-') {
+            throw new Error('Chime did not return a PDF statement');
+        }
+        return blob;
     } catch (err) {
         const e = /** @type {Error} */(err);
         throw new Error(`Failed to download Chime statement ${statement.statementId}: ${e.message}`);

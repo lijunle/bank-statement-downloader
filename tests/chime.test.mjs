@@ -2,8 +2,7 @@
  * Unit tests for Chime bank statement API implementation
  * Tests cover GraphQL API with persisted queries
  * 
- * Note: All mock data is based on actual content from analyze/chime.har
- * to ensure tests match real API responses.
+ * Fixtures use synthetic values and documented response shapes.
  */
 
 import { describe, it, beforeEach, mock } from 'node:test';
@@ -15,7 +14,7 @@ global.fetch = mockFetch;
 
 // Mock document.cookie for getSessionId
 global.document = {
-    cookie: 'chime_session=id=7878721e-33c0-5cf9-0d9d-6eb09aa06b9e&end_ts=1874489379017; __Host-uid=89947685; chime_user_id=89947685',
+    cookie: 'chime_session=id=synthetic-session&end_ts=946684800000; __Host-uid=1001; chime_user_id=1001',
 };
 
 // Mock Intl for timezone
@@ -44,7 +43,7 @@ describe('Chime API', () => {
     describe('getSessionId', () => {
         it('should extract session ID from chime_session cookie', () => {
             const sessionId = getSessionId();
-            assert.strictEqual(sessionId, '7878721e-33c0-5cf9-0d9d-6eb09aa06b9e');
+            assert.strictEqual(sessionId, 'synthetic-session');
         });
 
         it('should fall back to __Host-authn cookie if chime_session not found', () => {
@@ -97,7 +96,7 @@ describe('Chime API', () => {
 
             assert.deepStrictEqual(profile, {
                 sessionId: 'test-session-id',
-                profileId: '89947685',
+                profileId: '1001',
                 profileName: 'John Doe',
             });
 
@@ -179,7 +178,7 @@ describe('Chime API', () => {
             );
 
             const profile = await getProfile('test-session-id');
-            assert.strictEqual(profile.profileName, '89947685');
+            assert.strictEqual(profile.profileName, '1001');
         });
     });
 
@@ -197,7 +196,7 @@ describe('Chime API', () => {
                         bank_account_v2: {
                             savings_account: null,
                             primary_funding_account: {
-                                id: '3cb991e7-982e-55g0-9f70-9fe0aa2g4040',
+                                id: '00000000-0000-4000-8000-000000000001',
                                 account_name: 'Checking',
                                 display_balance: {
                                     amount: { value: '0.0' }
@@ -218,21 +217,43 @@ describe('Chime API', () => {
                 })
             );
 
+            mockFetch.mock.mockImplementationOnce(async () => ({
+                ok: true,
+                json: async () => ({ data: { me: { bank_account_v2: {
+                    primary_funding_account: { id: mockResponse.data.user.bank_account_v2.primary_funding_account.id, account_number: '000000001234' },
+                } } } }),
+            }), 1);
             const accounts = await getAccounts(mockProfile);
 
             assert.strictEqual(accounts.length, 1);
-            assert.strictEqual(accounts[0].accountId, '3cb991e7-982e-55g0-9f70-9fe0aa2g4040');
+            assert.strictEqual(accounts[0].accountId, '00000000-0000-4000-8000-000000000001');
             assert.strictEqual(accounts[0].accountName, 'Checking');
-            assert.strictEqual(accounts[0].accountMask, '4040');
+            assert.strictEqual(accounts[0].accountMask, '1234');
             assert.strictEqual(accounts[0].accountType, 'Checking');
             assert.strictEqual(accounts[0].profile, mockProfile);
 
             // Verify API call
             const calls = mockFetch.mock.calls;
-            assert.strictEqual(calls.length, 1);
+            assert.strictEqual(calls.length, 2);
             const requestBody = JSON.parse(calls[0].arguments[1].body);
             assert.strictEqual(requestBody.operationName, 'HomeFeedAccountsQuery');
             assert.strictEqual(requestBody.extensions.persistedQuery.sha256Hash, 'md5:ca98a6f37e5df3c609f762c922dd5edb');
+            const infoBody = JSON.parse(calls[1].arguments[1].body);
+            assert.equal(infoBody.operationName, 'AccountInfoQuery');
+            assert.equal(infoBody.extensions.persistedQuery.sha256Hash, 'md5:e57adf8d54262ff92f7b952f3aac90b7');
+            assert.ok(!JSON.stringify(accounts).includes('000000001234'));
+        });
+
+        it('rejects missing or mismatched checking details without a UUID mask fallback', async () => {
+            for (const detail of [null, { id: 'another-id', account_number: '000000001234' }, { id: 'checking-id' }]) {
+                mockFetch.mock.mockImplementation(async (_, options) => ({
+                    ok: true,
+                    json: async () => JSON.parse(options.body).operationName === 'HomeFeedAccountsQuery'
+                        ? { data: { user: { bank_account_v2: { primary_funding_account: { id: 'checking-id', account_name: 'Checking' } } } } }
+                        : { data: { me: { bank_account_v2: { primary_funding_account: detail } } } },
+                }));
+                await assert.rejects(getAccounts(mockProfile), /checking account details/);
+            }
         });
 
         it('should extract multiple accounts including savings and credit', async () => {
@@ -268,6 +289,12 @@ describe('Chime API', () => {
                 })
             );
 
+            mockFetch.mock.mockImplementationOnce(async () => ({
+                ok: true,
+                json: async () => ({ data: { me: { bank_account_v2: {
+                    primary_funding_account: { id: 'checking-id-123', account_number: '000000001234' },
+                } } } }),
+            }), 1);
             const accounts = await getAccounts(mockProfile);
 
             assert.strictEqual(accounts.length, 3);
@@ -279,10 +306,12 @@ describe('Chime API', () => {
             const savings = accounts.find(a => a.accountType === 'Savings');
             assert.strictEqual(savings.accountId, 'savings-id-456');
             assert.strictEqual(savings.accountName, 'Savings');
+            assert.strictEqual(savings.accountMask, '-456');
 
             const credit = accounts.find(a => a.accountType === 'CreditCard');
             assert.strictEqual(credit.accountId, 'credit-id-789');
             assert.strictEqual(credit.accountName, 'Credit Card');
+            assert.strictEqual(credit.accountMask, '-789');
         });
 
         it('should return empty array when no accounts exist', async () => {
@@ -314,9 +343,9 @@ describe('Chime API', () => {
     describe('getStatements', () => {
         const mockAccount = {
             profile: { sessionId: 'test', profileId: 'test', profileName: 'Test' },
-            accountId: '3cb991e7-982e-55g0-9f70-9fe0aa2g4040',
+            accountId: '00000000-0000-4000-8000-000000000001',
             accountName: 'Checking',
-            accountMask: '4040',
+            accountMask: '1234',
             accountType: 'Checking',
         };
 
@@ -331,21 +360,21 @@ describe('Chime API', () => {
                                 statement_periods: [
                                     {
                                         display_name: 'October 2025',
-                                        id: '82146440_20251031',
+                                        id: '1001_20251031',
                                         month: 10,
                                         year: 2025,
                                         __typename: 'StatementPeriod'
                                     },
                                     {
                                         display_name: 'September 2025',
-                                        id: '82146440_20250930',
+                                        id: '1001_20250930',
                                         month: 9,
                                         year: 2025,
                                         __typename: 'StatementPeriod'
                                     },
                                     {
                                         display_name: 'August 2025',
-                                        id: '82146440_20250831',
+                                        id: '1001_20250831',
                                         month: 8,
                                         year: 2025,
                                         __typename: 'StatementPeriod'
@@ -369,12 +398,12 @@ describe('Chime API', () => {
             const statements = await getStatements(mockAccount);
 
             assert.strictEqual(statements.length, 3);
-            assert.strictEqual(statements[0].statementId, '82146440_20251031');
-            assert.strictEqual(statements[0].statementDate, new Date(2025, 9, 1).toISOString()); // October 1, 2025
+            assert.strictEqual(statements[0].statementId, '1001_20251031');
+            assert.strictEqual(statements[0].statementDate, '2025-10-01T00:00:00.000Z');
             assert.strictEqual(statements[0].account, mockAccount);
 
-            assert.strictEqual(statements[1].statementId, '82146440_20250930');
-            assert.strictEqual(statements[1].statementDate, new Date(2025, 8, 1).toISOString()); // September 1, 2025
+            assert.strictEqual(statements[1].statementId, '1001_20250930');
+            assert.strictEqual(statements[1].statementDate, '2025-09-01T00:00:00.000Z');
 
             // Verify statements are sorted by date descending (newest first)
             assert.ok(new Date(statements[0].statementDate).getTime() > new Date(statements[1].statementDate).getTime());
@@ -477,7 +506,7 @@ describe('Chime API', () => {
 
             assert.strictEqual(statements.length, 1);
             assert.strictEqual(statements[0].statementId, 'credit_20251130');
-            assert.strictEqual(statements[0].statementDate, new Date(2025, 10, 1).toISOString()); // November 1, 2025
+            assert.strictEqual(statements[0].statementDate, '2025-11-01T00:00:00.000Z');
         });
 
         it('should return empty array when no statements exist', async () => {
@@ -506,7 +535,7 @@ describe('Chime API', () => {
             assert.strictEqual(statements.length, 0);
         });
 
-        it('should filter out incomplete statement periods', async () => {
+        it('should reject incomplete statement periods rather than return a partial list', async () => {
             const mockResponse = {
                 data: {
                     statements: {
@@ -546,32 +575,56 @@ describe('Chime API', () => {
                 })
             );
 
-            const statements = await getStatements(mockAccount);
+            await assert.rejects(getStatements(mockAccount), /Invalid statement period/);
+        });
 
-            // Only the complete statement should be included
-            assert.strictEqual(statements.length, 1);
-            assert.strictEqual(statements[0].statementId, 'stmt-1');
+        it('keeps the selected month in UTC for positive time zones', async () => {
+            const previous = process.env.TZ;
+            process.env.TZ = 'Asia/Shanghai';
+            try {
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true,
+                    json: async () => ({ data: { statements: { statement_accounts: [{
+                        account_type: 'checking', statement_periods: [{ id: 'synthetic-period', month: 1, year: 2000 }],
+                    }] } } }),
+                }));
+                assert.equal((await getStatements(mockAccount))[0].statementDate, '2000-01-01T00:00:00.000Z');
+            } finally {
+                if (previous === undefined) delete process.env.TZ;
+                else process.env.TZ = previous;
+            }
+        });
+
+        it('rejects invalid month/year values without normalizing them', async () => {
+            for (const [month, year] of [[13, 2000], [0, 2000], [1.5, 2000], [1, '2000']]) {
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true,
+                    json: async () => ({ data: { statements: { statement_accounts: [{
+                        account_type: 'checking', statement_periods: [{ id: 'synthetic-period', month, year }],
+                    }] } } }),
+                }));
+                await assert.rejects(getStatements(mockAccount), /Invalid statement period/);
+            }
         });
     });
 
     describe('downloadStatement', () => {
         const mockAccount = {
             profile: { sessionId: 'test', profileId: 'test', profileName: 'Test' },
-            accountId: '3cb991e7-982e-55g0-9f70-9fe0aa2g4040',
+            accountId: '00000000-0000-4000-8000-000000000001',
             accountName: 'Checking',
-            accountMask: '4040',
+            accountMask: '1234',
             accountType: 'Checking',
         };
 
         const mockStatement = {
             account: mockAccount,
-            statementId: '82146440_20251031',
-            statementDate: new Date(2025, 9, 1), // October 1, 2025
+            statementId: '1001_20251031',
+            statementDate: '2025-10-01T00:00:00.000Z',
         };
 
         it('should download statement PDF', async () => {
-            // Create a sample base64 PDF (header only for testing)
-            const pdfBase64 = 'JVBERi0xLjQKJeLjz9MKMSAwIG9iago8PAovVHlwZSAvQ2F0YWxvZwovUGFnZXMgMiAwIFIKPj4KZW5kb2JqCg=='; // Minimal PDF header in base64
+            const pdfBase64 = btoa('%PDF-1.7\nsynthetic document');
             const pdfBytes = Uint8Array.from(atob(pdfBase64), c => c.charCodeAt(0));
 
             const mockResponse = {
@@ -621,7 +674,7 @@ describe('Chime API', () => {
                     accountType: 'Savings',
                 },
                 statementId: 'savings_20250930',
-                statementDate: new Date(2025, 8, 1), // September 1, 2025
+                statementDate: '2025-09-01T00:00:00.000Z',
             };
 
             const pdfBase64 = 'JVBERi0xLjQK';
@@ -662,7 +715,7 @@ describe('Chime API', () => {
                     accountType: 'CreditCard',
                 },
                 statementId: 'credit_20251130',
-                statementDate: new Date(2025, 10, 1), // November 1, 2025
+                statementDate: '2025-11-01T00:00:00.000Z',
             };
 
             const pdfBase64 = 'JVBERi0xLjQK';
@@ -746,6 +799,48 @@ describe('Chime API', () => {
     });
 
     describe('Error Handling', () => {
+        it('rejects missing operation data instead of returning empty results', async () => {
+            for (const value of [null, [], {}, { data: null }, { data: {} }]) {
+                mockFetch.mock.mockImplementation(async () => ({ ok: true, json: async () => value }));
+                await assert.rejects(getProfile('synthetic-session'), /Invalid/);
+                await assert.rejects(getAccounts({ sessionId: 'test', profileId: 'test', profileName: 'Test' }), /Invalid/);
+                await assert.rejects(getStatements({ accountId: 'checking-id', accountType: 'Checking' }), /Invalid/);
+            }
+        });
+
+        it('uses the UTC selected month for downloads even in negative time zones', async () => {
+            const previous = process.env.TZ;
+            process.env.TZ = 'America/Los_Angeles';
+            try {
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true,
+                    json: async () => ({ data: { statements: { statement_accounts: [{
+                        name: 'Checking', monthly_pdf_statement: { encoded_pdf: btoa('%PDF-1.7\nsynthetic') },
+                    }] } } }),
+                }));
+                await downloadStatement({ account: { accountType: 'Checking' }, statementId: 'synthetic-period', statementDate: '2000-01-01T00:00:00.000Z' });
+                assert.deepEqual(JSON.parse(mockFetch.mock.calls[0].arguments[1].body).variables,
+                    { account_types: ['checking'], month: 1, year: 2000 });
+            } finally {
+                if (previous === undefined) delete process.env.TZ;
+                else process.env.TZ = previous;
+            }
+        });
+
+        it('rejects decoded non-PDF data and ambiguous download buckets', async () => {
+            for (const accounts of [
+                [{ monthly_pdf_statement: { encoded_pdf: btoa('<html>Sign in</html>') } }],
+                [{ monthly_pdf_statement: { encoded_pdf: btoa('%PDF-1.7\none') } }, { monthly_pdf_statement: { encoded_pdf: btoa('%PDF-1.7\ntwo') } }],
+            ]) {
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true,
+                    json: async () => ({ data: { statements: { statement_accounts: accounts } } }),
+                }));
+                await assert.rejects(downloadStatement({ account: { accountType: 'Checking' }, statementId: 'synthetic-period', statementDate: '2000-01-01T00:00:00.000Z' }),
+                    /PDF|Ambiguous/);
+            }
+        });
+
         it('should throw error when GraphQL request fails', async () => {
             const mockProfile = {
                 sessionId: 'test',
