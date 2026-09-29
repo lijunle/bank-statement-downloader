@@ -37,12 +37,9 @@ The current eligible response has `bankHostSystemDownFlag`,
 account arrays. A service-outage response must not be reported as a genuine empty
 account list.
 
-The original extension loaded the same single card and fourteen available
-statements successfully. No endpoint migration is needed for this scope. Local
-edge-case probes exposed timezone-dependent calendar conversion, permissive
-invalid-date normalization, skipped malformed response groups, account-ID suffix
-mask fallback, and insufficient PDF-body validation; these are separate from the
-successful ordinary bank-UI path.
+The existing profile, eligible-account, card-statement-list, and recent-PDF
+routes remain applicable to the observed credit-card flow; no endpoint migration
+is indicated by the current bank-UI evidence.
 
 ## Shared contract mapping and validation
 
@@ -50,15 +47,21 @@ successful ordinary bank-UI path.
   Cross-user switching and authentication lifecycle are not established here.
 - Use eligible-account IDs as opaque selectors, not account numbers. For the
   observed card, the nickname's trailing digits agree with the dashboard's
-  `displayAccountNumber`; expose these as the mask. A missing display mask must
-  not silently fall back to an opaque ID suffix.
+  `displayAccountNumber`; expose the last four digits as the mask, including when
+  a nickname displays five trailing digits. Citi has no five-digit exception in
+  the shared contract. A missing display mask must not silently fall back to an
+  opaque ID suffix.
 - Retain `statementDate` exactly as the download identifier (`MM/DD/YYYY`), while
   converting the calendar date to UTC midnight for the shared statement date.
   Reject malformed and impossible dates before listing or downloading.
-- Explicit empty account/month arrays are valid. Host-down flags, malformed
-  account entries, or missing/invalid year/month groups are errors, not empty or
-  partial success. The PDF must have the expected MIME type and `%PDF-` prefix;
-  these guards do not replace full document acceptance checks.
+- All supported account groups (`cardAccounts`, `bankAccounts`, `loanAccounts`)
+  must be explicit arrays; missing groups are not equivalent to empty arrays.
+  Recognized host-down flags are optional, but each present flag must be boolean:
+  `true` reports unavailability, while other types are malformed responses.
+  Explicit empty account/month arrays remain valid. Malformed account entries or
+  missing/invalid year/month groups are errors, not empty or partial success.
+  The PDF must have the expected MIME type and `%PDF-` prefix; these guards do not
+  replace full document acceptance checks.
 - Archived-statement requests, annual summaries, and non-card download routes are
   outside the observed scope. The existing bank/loan account mappings remain
   compatibility paths, not proof that their card-route downloads work.

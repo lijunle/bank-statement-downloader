@@ -337,11 +337,77 @@ describe('Citi API', () => {
             }
         });
 
+        it('rejects missing supported account groups instead of returning empty or partial results', async () => {
+            for (const missing of ['cardAccounts', 'bankAccounts', 'loanAccounts']) {
+                for (const withCard of [false, true]) {
+                    const eligibleAccounts = {
+                        cardAccounts: withCard ? [{ accountId: 'synthetic-card', accountNickname: 'Synthetic Card - 1234' }] : [],
+                        bankAccounts: [],
+                        loanAccounts: [],
+                    };
+                    delete eligibleAccounts[missing];
+                    mockFetch.mock.mockImplementation(async () => ({
+                        ok: true,
+                        json: async () => ({ userType: 'CARDS', eligibleAccounts }),
+                    }));
+                    await assert.rejects(getAccounts(mockProfile), /Invalid Citi account groups/);
+                }
+            }
+        });
+
+        it('rejects non-boolean host-down flags instead of treating them as healthy', async () => {
+            for (const flag of ['bankHostSystemDownFlag', 'cardsHostSystemDownFlag', 'isCardsHostSystemDownFlag']) {
+                for (const value of ['true', 'false', 1, 0, null, {}, []]) {
+                    mockFetch.mock.mockImplementation(async () => ({
+                        ok: true,
+                        json: async () => ({
+                            [flag]: value,
+                            eligibleAccounts: { cardAccounts: [], bankAccounts: [], loanAccounts: [] },
+                        }),
+                    }));
+                    await assert.rejects(getAccounts(mockProfile), /Invalid Citi account service status/);
+                }
+            }
+        });
+
+        it('accepts explicit false host flags and genuine empty account arrays', async () => {
+            mockFetch.mock.mockImplementation(async () => ({
+                ok: true,
+                json: async () => ({
+                    bankHostSystemDownFlag: false,
+                    cardsHostSystemDownFlag: false,
+                    isCardsHostSystemDownFlag: false,
+                    eligibleAccounts: { cardAccounts: [], bankAccounts: [], loanAccounts: [] },
+                }),
+            }));
+            assert.deepEqual(await getAccounts(mockProfile), []);
+        });
+
+        it('returns four-digit Citi masks for card, bank and loan nickname suffixes', async () => {
+            for (const suffix of ['0123', '12345']) {
+                const entry = type => ({ accountId: `synthetic-${type}`, accountNickname: `${type} - ${suffix} ` });
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true,
+                    json: async () => ({
+                        eligibleAccounts: {
+                            cardAccounts: [entry('Card')],
+                            bankAccounts: [entry('Checking')],
+                            loanAccounts: [entry('Loan')],
+                        },
+                    }),
+                }));
+                const accounts = await getAccounts(mockProfile);
+                assert.deepEqual(accounts.map(account => account.accountMask), Array(3).fill(suffix.slice(-4)));
+                assert.deepEqual(accounts.map(account => account.accountType), ['CreditCard', 'Checking', 'Loan']);
+            }
+        });
+
         it('rejects malformed account groups and entries instead of returning partial success', async () => {
             for (const eligibleAccounts of [
-                {}, [], { cardAccounts: {} }, { cardAccounts: [null] },
-                { cardAccounts: [{ accountNickname: 'Synthetic Card - 1234' }] },
-                { cardAccounts: [{ accountId: 'synthetic-id', accountNickname: 'Synthetic Card' }] },
+                {}, [], { cardAccounts: {}, bankAccounts: [], loanAccounts: [] },
+                { cardAccounts: [null], bankAccounts: [], loanAccounts: [] },
+                { cardAccounts: [{ accountNickname: 'Synthetic Card - 1234' }], bankAccounts: [], loanAccounts: [] },
+                { cardAccounts: [{ accountId: 'synthetic-id', accountNickname: 'Synthetic Card' }], bankAccounts: [], loanAccounts: [] },
             ]) {
                 mockFetch.mock.mockImplementation(async () => ({ ok: true, json: async () => ({ eligibleAccounts }) }));
                 await assert.rejects(getAccounts(mockProfile), /Invalid .*account/i);

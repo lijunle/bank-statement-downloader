@@ -38,7 +38,7 @@ function accountMask(account) {
     }
     const match = account.accountNickname.match(/\b(\d{4,5})\s*$/);
     if (!match) throw new Error('Invalid Citi account mask');
-    return match[1];
+    return match[1].slice(-4);
 }
 
 /**
@@ -157,13 +157,15 @@ export async function getAccounts(profile) {
         if (!isObject(data) || !isObject(data.eligibleAccounts)) {
             throw new Error('Invalid response format from eligible accounts API');
         }
-        if (data.bankHostSystemDownFlag === true || data.cardsHostSystemDownFlag === true ||
-            data.isCardsHostSystemDownFlag === true) {
+        const hostFlags = ['bankHostSystemDownFlag', 'cardsHostSystemDownFlag', 'isCardsHostSystemDownFlag'];
+        if (hostFlags.some(flag => Object.prototype.hasOwnProperty.call(data, flag) && typeof data[flag] !== 'boolean')) {
+            throw new Error('Invalid Citi account service status');
+        }
+        if (hostFlags.some(flag => data[flag] === true)) {
             throw new Error('Citi account service is temporarily unavailable');
         }
         const groups = ['cardAccounts', 'bankAccounts', 'loanAccounts'];
-        if (!groups.some(group => Array.isArray(data.eligibleAccounts[group])) ||
-            groups.some(group => data.eligibleAccounts[group] !== undefined && !Array.isArray(data.eligibleAccounts[group]))) {
+        if (groups.some(group => !Array.isArray(data.eligibleAccounts[group]))) {
             throw new Error('Invalid Citi account groups');
         }
 
