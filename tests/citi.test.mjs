@@ -2,8 +2,7 @@
  * Unit tests for Citi bank statement API implementation
  * Tests cover credit card account functionality
  * 
- * Note: All mock data is based on actual content from analyze/citi.har and analyze/citi.md
- * to ensure tests match real API responses.
+ * Fixtures use synthetic values with documented response shapes.
  */
 
 import { describe, it, beforeEach, mock } from 'node:test';
@@ -15,7 +14,7 @@ global.fetch = mockFetch;
 
 // Mock document.cookie for getSessionId
 global.document = {
-    cookie: 'bcsid=F5D89985C2GGD6FGDE347627322D2511; citi_authorization=test; client_id=test-uuid; isLoggedIn=true',
+    cookie: 'bcsid=synthetic-session; citi_authorization=test; client_id=test-uuid; isLoggedIn=true',
 };
 
 // Import the module after setting up mocks
@@ -37,7 +36,7 @@ describe('Citi API', () => {
     describe('getSessionId', () => {
         it('should extract bcsid cookie from document.cookie', () => {
             const sessionId = getSessionId();
-            assert.strictEqual(sessionId, 'F5D89985C2GGD6FGDE347627322D2511');
+            assert.strictEqual(sessionId, 'synthetic-session');
         });
 
         it('should throw error when bcsid cookie is not found', () => {
@@ -54,8 +53,8 @@ describe('Citi API', () => {
         it('should extract profile information from welcomeMessage API', async () => {
             const mockResponse = {
                 welcomeData: {
-                    firstName: 'JOHN',
-                    lastLoginTime: 'Oct. 12, 2025 (2:11 AM ET)',
+                    firstName: 'TEST',
+                    lastLoginTime: 'Jan. 01, 2000 (12:00 AM ET)',
                     lastLoginDevice: 'from mobile device.',
                 },
                 displayTutorialFlag: false,
@@ -68,12 +67,12 @@ describe('Citi API', () => {
                 })
             );
 
-            const profile = await getProfile('F5D89985C2GGD6FGDE347627322D2511');
+            const profile = await getProfile('synthetic-session');
 
             assert.deepStrictEqual(profile, {
-                sessionId: 'F5D89985C2GGD6FGDE347627322D2511',
-                profileId: 'F5D89985C2GGD6FGDE347627322D2511',
-                profileName: 'JOHN',
+                sessionId: 'synthetic-session',
+                profileId: 'synthetic-session',
+                profileName: 'TEST',
             });
 
             const calls = mockFetch.mock.calls;
@@ -87,7 +86,7 @@ describe('Citi API', () => {
         it('should handle missing firstName gracefully', async () => {
             const mockResponse = {
                 welcomeData: {
-                    lastLoginTime: 'Oct. 12, 2025 (2:11 AM ET)',
+                    lastLoginTime: 'Jan. 01, 2000 (12:00 AM ET)',
                     lastLoginDevice: 'from mobile device.',
                 },
                 displayTutorialFlag: false,
@@ -124,7 +123,7 @@ describe('Citi API', () => {
         const mockProfile = {
             sessionId: 'test-session-id',
             profileId: 'test-profile-id',
-            profileName: 'JOHN',
+            profileName: 'TEST',
         };
 
         it('should extract credit card accounts from eligibleAccounts API', async () => {
@@ -142,13 +141,13 @@ describe('Citi API', () => {
                     retirementAccounts: [],
                     cardAccounts: [
                         {
-                            accountId: 'b187961b-fcc6-5b94-cf38-719c9d8bcgd1',
-                            accountNickname: 'Citi Strata℠ Card - 0460',
+                            accountId: 'synthetic-card-id',
+                            accountNickname: 'Synthetic Citi Card - 1234',
                             imageUrl: 'https://online.citi.com/cards/svc/img/svgImage/408_Moonstone_Updated.svg',
                             accountType: 'CARDS',
                             paperlessEnrollmentFlag: true,
                             paperlessEligibleFlag: true,
-                            productDesc: 'Citi Strata℠ Card',
+                            productDesc: 'Synthetic Citi Card',
                         },
                     ],
                 },
@@ -167,9 +166,9 @@ describe('Citi API', () => {
             assert.strictEqual(accounts.length, 1);
             assert.deepStrictEqual(accounts[0], {
                 profile: mockProfile,
-                accountId: 'b187961b-fcc6-5b94-cf38-719c9d8bcgd1',
-                accountName: 'Citi Strata℠ Card - 0460',
-                accountMask: '0460',
+                accountId: 'synthetic-card-id',
+                accountName: 'Synthetic Citi Card - 1234',
+                accountMask: '1234',
                 accountType: 'CreditCard',
             });
 
@@ -324,6 +323,30 @@ describe('Citi API', () => {
 
             assert.strictEqual(accounts.length, 0);
         });
+
+        it('rejects explicit bank or card host outages instead of caching no accounts', async () => {
+            for (const flag of ['bankHostSystemDownFlag', 'cardsHostSystemDownFlag', 'isCardsHostSystemDownFlag']) {
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true,
+                    json: async () => ({
+                        [flag]: true,
+                        eligibleAccounts: { bankAccounts: [], cardAccounts: [], loanAccounts: [] },
+                    }),
+                }));
+                await assert.rejects(getAccounts(mockProfile), /temporarily unavailable/);
+            }
+        });
+
+        it('rejects malformed account groups and entries instead of returning partial success', async () => {
+            for (const eligibleAccounts of [
+                {}, [], { cardAccounts: {} }, { cardAccounts: [null] },
+                { cardAccounts: [{ accountNickname: 'Synthetic Card - 1234' }] },
+                { cardAccounts: [{ accountId: 'synthetic-id', accountNickname: 'Synthetic Card' }] },
+            ]) {
+                mockFetch.mock.mockImplementation(async () => ({ ok: true, json: async () => ({ eligibleAccounts }) }));
+                await assert.rejects(getAccounts(mockProfile), /Invalid .*account/i);
+            }
+        });
     });
 
     describe('getStatements', () => {
@@ -331,11 +354,11 @@ describe('Citi API', () => {
             profile: {
                 sessionId: 'test-session-id',
                 profileId: 'test-profile-id',
-                profileName: 'JOHN',
+                profileName: 'TEST',
             },
-            accountId: 'b187961b-fcc6-5b94-cf38-719c9d8bcgd1',
-            accountName: 'Citi Strata℠ Card - 0460',
-            accountMask: '0460',
+            accountId: 'synthetic-card-id',
+            accountName: 'Synthetic Citi Card - 1234',
+            accountMask: '1234',
             accountType: 'CreditCard',
         };
 
@@ -390,10 +413,7 @@ describe('Citi API', () => {
 
             // Verify date parsing - now returns ISO string
             assert.strictEqual(typeof statements[0].statementDate, 'string');
-            const date = new Date(statements[0].statementDate);
-            assert.strictEqual(date.getFullYear(), 2025);
-            assert.strictEqual(date.getMonth(), 6); // July (0-indexed)
-            assert.strictEqual(date.getDate(), 17);
+            assert.strictEqual(statements[0].statementDate, '2025-07-17T00:00:00.000Z');
 
             // Verify account reference
             assert.strictEqual(statements[0].account, mockAccount);
@@ -455,6 +475,41 @@ describe('Citi API', () => {
 
             assert.strictEqual(statements.length, 0);
         });
+
+        it('preserves the statement calendar date in positive time zones', async () => {
+            const previous = process.env.TZ;
+            process.env.TZ = 'Asia/Shanghai';
+            try {
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true,
+                    json: async () => ({ statementsByYear: [{ statementsByMonth: [{ statementDate: '03/31/2000' }] }] }),
+                }));
+                assert.equal((await getStatements(mockAccount))[0].statementDate, '2000-03-31T00:00:00.000Z');
+            } finally {
+                if (previous === undefined) delete process.env.TZ;
+                else process.env.TZ = previous;
+            }
+        });
+
+        it('rejects impossible and malformed date values instead of normalizing them', async () => {
+            for (const statementDate of ['02/30/2000', '02/29/2001', '13/01/2000', '03/31/2000extra', '', null, 20000331]) {
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true,
+                    json: async () => ({ statementsByYear: [{ statementsByMonth: [{ statementDate }] }] }),
+                }));
+                await assert.rejects(getStatements(mockAccount), /Invalid statement date/);
+            }
+        });
+
+        it('rejects malformed year groups or statement rows instead of skipping them', async () => {
+            for (const statementsByYear of [
+                {}, [null], [{}], [{ statementsByMonth: null }],
+                [{ statementsByMonth: [{ statementDate: '03/31/2000' }, {}] }],
+            ]) {
+                mockFetch.mock.mockImplementation(async () => ({ ok: true, json: async () => ({ statementsByYear }) }));
+                await assert.rejects(getStatements(mockAccount), /Invalid .*statement/i);
+            }
+        });
     });
 
     describe('downloadStatement', () => {
@@ -463,20 +518,19 @@ describe('Citi API', () => {
                 profile: {
                     sessionId: 'test-session-id',
                     profileId: 'test-profile-id',
-                    profileName: 'JOHN',
+                    profileName: 'TEST',
                 },
-                accountId: 'b187961b-fcc6-5b94-cf38-719c9d8bcgd1',
-                accountName: 'Citi Strata℠ Card - 0460',
-                accountMask: '0460',
+                accountId: 'synthetic-card-id',
+                accountName: 'Synthetic Citi Card - 1234',
+                accountMask: '1234',
                 accountType: 'CreditCard',
             },
             statementId: '07/17/2025',
-            statementDate: new Date(2025, 6, 17),
+            statementDate: '2025-07-17T00:00:00.000Z',
         };
 
         it('should download statement PDF', async () => {
-            const mockPdfData = new Uint8Array([0x25, 0x50, 0x44, 0x46]); // PDF header
-            const mockBlob = new Blob([mockPdfData], { type: 'application/pdf' });
+            const mockBlob = new Blob(['%PDF-1.7\nsynthetic document'], { type: 'application/pdf' });
 
             mockFetch.mock.mockImplementationOnce(() =>
                 Promise.resolve({
@@ -489,7 +543,7 @@ describe('Citi API', () => {
 
             assert.ok(blob instanceof Blob);
             assert.strictEqual(blob.type, 'application/pdf');
-            assert.strictEqual(blob.size, 4);
+            assert.strictEqual(blob.size, mockBlob.size);
 
             const calls = mockFetch.mock.calls;
             assert.strictEqual(calls.length, 1);
@@ -540,6 +594,21 @@ describe('Citi API', () => {
                 async () => await downloadStatement(mockStatement),
                 /Unexpected content type: text\/html\. Expected PDF/
             );
+        });
+
+        it('rejects non-PDF bytes and lookalike PDF MIME types', async () => {
+            for (const blob of [
+                new Blob(['{"error":"expired"}'], { type: 'application/pdf' }),
+                new Blob(['%PDF-1.7\nsynthetic'], { type: 'application/not-pdf' }),
+            ]) {
+                mockFetch.mock.mockImplementation(async () => ({ ok: true, blob: async () => blob }));
+                await assert.rejects(downloadStatement(mockStatement), /PDF/);
+            }
+        });
+
+        it('rejects an invalid selected date before issuing a download request', async () => {
+            await assert.rejects(downloadStatement({ ...mockStatement, statementId: '02/30/2000' }), /Invalid statement date/);
+            assert.equal(mockFetch.mock.calls.length, 0);
         });
 
         it('should handle API errors gracefully', async () => {

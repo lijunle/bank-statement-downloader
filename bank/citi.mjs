@@ -11,6 +11,36 @@ export const bankName = 'Citi';
 
 const BASE_URL = 'https://online.citi.com/gcgapi/prod/public/v1';
 
+/** @param {any} value */
+function isObject(value) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** @param {unknown} value @returns {string} */
+function statementDateIso(value) {
+    if (typeof value !== 'string' || !/^\d{2}\/\d{2}\/\d{4}$/.test(value)) {
+        throw new Error('Invalid statement date from Citi');
+    }
+    const [month, day, year] = value.split('/');
+    const calendar = `${year}-${month}-${day}`;
+    const date = new Date(`${calendar}T00:00:00.000Z`);
+    if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== calendar) {
+        throw new Error('Invalid statement date from Citi');
+    }
+    return date.toISOString();
+}
+
+/** @param {any} account @returns {string} */
+function accountMask(account) {
+    if (!isObject(account) || typeof account.accountId !== 'string' || !account.accountId.trim() ||
+        typeof account.accountNickname !== 'string') {
+        throw new Error('Invalid Citi account data');
+    }
+    const match = account.accountNickname.match(/\b(\d{4,5})\s*$/);
+    if (!match) throw new Error('Invalid Citi account mask');
+    return match[1];
+}
+
 /**
  * Makes an authenticated API request with all required headers and cookies
  * @param {string} endpoint - API endpoint path (relative to base URL)
@@ -90,7 +120,8 @@ export async function getProfile(sessionId) {
 
         const data = /** @type {any} */ (await response.json());
 
-        if (!data || !data.welcomeData) {
+        if (!isObject(data) || !isObject(data.welcomeData) ||
+            (data.welcomeData.firstName !== undefined && typeof data.welcomeData.firstName !== 'string')) {
             throw new Error('Invalid response format from welcome message API');
         }
 
@@ -123,8 +154,17 @@ export async function getAccounts(profile) {
 
         const data = /** @type {any} */ (await response.json());
 
-        if (!data || !data.eligibleAccounts) {
+        if (!isObject(data) || !isObject(data.eligibleAccounts)) {
             throw new Error('Invalid response format from eligible accounts API');
+        }
+        if (data.bankHostSystemDownFlag === true || data.cardsHostSystemDownFlag === true ||
+            data.isCardsHostSystemDownFlag === true) {
+            throw new Error('Citi account service is temporarily unavailable');
+        }
+        const groups = ['cardAccounts', 'bankAccounts', 'loanAccounts'];
+        if (!groups.some(group => Array.isArray(data.eligibleAccounts[group])) ||
+            groups.some(group => data.eligibleAccounts[group] !== undefined && !Array.isArray(data.eligibleAccounts[group]))) {
+            throw new Error('Invalid Citi account groups');
         }
 
         /** @type {import('./bank.types').Account[]} */
@@ -133,16 +173,13 @@ export async function getAccounts(profile) {
         // Process card accounts
         if (data.eligibleAccounts.cardAccounts && Array.isArray(data.eligibleAccounts.cardAccounts)) {
             for (const cardAccount of data.eligibleAccounts.cardAccounts) {
-                // Extract last 4 digits from the account nickname
-                // Format: "Citi Strata℠ Card - 9359"
-                const match = cardAccount.accountNickname?.match(/(\d{4,5})$/);
-                const accountMask = match ? match[1] : cardAccount.accountId.slice(-4);
+                const mask = accountMask(cardAccount);
 
                 accounts.push({
                     profile,
                     accountId: cardAccount.accountId,
-                    accountName: cardAccount.accountNickname || cardAccount.productDesc || `Card ${accountMask}`,
-                    accountMask,
+                    accountName: cardAccount.accountNickname,
+                    accountMask: mask,
                     accountType: /** @type {import('./bank.types').AccountType} */ ('CreditCard'),
                 });
             }
@@ -151,8 +188,7 @@ export async function getAccounts(profile) {
         // Process bank accounts
         if (data.eligibleAccounts.bankAccounts && Array.isArray(data.eligibleAccounts.bankAccounts)) {
             for (const bankAccount of data.eligibleAccounts.bankAccounts) {
-                const match = bankAccount.accountNickname?.match(/(\d{4})$/);
-                const accountMask = match ? match[1] : bankAccount.accountId.slice(-4);
+                const mask = accountMask(bankAccount);
 
                 // Determine account type from nickname or other fields
                 const nickname = (bankAccount.accountNickname || '').toLowerCase();
@@ -162,8 +198,8 @@ export async function getAccounts(profile) {
                 accounts.push({
                     profile,
                     accountId: bankAccount.accountId,
-                    accountName: bankAccount.accountNickname || `Account ${accountMask}`,
-                    accountMask,
+                    accountName: bankAccount.accountNickname,
+                    accountMask: mask,
                     accountType,
                 });
             }
@@ -172,14 +208,13 @@ export async function getAccounts(profile) {
         // Process loan accounts
         if (data.eligibleAccounts.loanAccounts && Array.isArray(data.eligibleAccounts.loanAccounts)) {
             for (const loanAccount of data.eligibleAccounts.loanAccounts) {
-                const match = loanAccount.accountNickname?.match(/(\d{4})$/);
-                const accountMask = match ? match[1] : loanAccount.accountId.slice(-4);
+                const mask = accountMask(loanAccount);
 
                 accounts.push({
                     profile,
                     accountId: loanAccount.accountId,
-                    accountName: loanAccount.accountNickname || `Loan ${accountMask}`,
-                    accountMask,
+                    accountName: loanAccount.accountNickname,
+                    accountMask: mask,
                     accountType: /** @type {import('./bank.types').AccountType} */ ('Loan'),
                 });
             }
@@ -208,7 +243,7 @@ export async function getStatements(account) {
 
         const data = /** @type {any} */ (await response.json());
 
-        if (!data || !data.statementsByYear) {
+        if (!isObject(data) || !Array.isArray(data.statementsByYear)) {
             throw new Error('Invalid response format from statements list API');
         }
 
@@ -216,15 +251,13 @@ export async function getStatements(account) {
 
         // Process statements grouped by year
         for (const yearGroup of data.statementsByYear) {
-            if (!yearGroup.statementsByMonth || !Array.isArray(yearGroup.statementsByMonth)) {
-                continue;
+            if (!isObject(yearGroup) || !Array.isArray(yearGroup.statementsByMonth)) {
+                throw new Error('Invalid Citi statement year group');
             }
 
             for (const statement of yearGroup.statementsByMonth) {
-                // Parse statement date from MM/DD/YYYY format
-                const dateStr = statement.statementDate; // e.g., "07/17/2025"
-                const [month, day, year] = dateStr.split('/').map((/** @type {string} */ n) => parseInt(n, 10));
-                const statementDate = new Date(year, month - 1, day).toISOString(); // JS months are 0-indexed
+                if (!isObject(statement)) throw new Error('Invalid Citi statement entry');
+                const statementDate = statementDateIso(statement.statementDate);
 
                 statements.push({
                     account,
@@ -253,6 +286,7 @@ export async function downloadStatement(statement) {
     try {
         // The statementId is the statement date in MM/DD/YYYY format
         const statementDate = statement.statementId;
+        statementDateIso(statementDate);
 
         const response = await makeAuthenticatedRequest('/v2/digital/card/accounts/statements/recent/retrieve', {
             method: 'POST',
@@ -271,8 +305,11 @@ export async function downloadStatement(statement) {
         }
 
         // Verify it's a PDF by checking the content type
-        if (!blob.type.includes('pdf')) {
+        if (blob.type.split(';')[0].trim().toLowerCase() !== 'application/pdf') {
             throw new Error(`Unexpected content type: ${blob.type}. Expected PDF.`);
+        }
+        if (await blob.slice(0, 5).text() !== '%PDF-') {
+            throw new Error('Citi did not return a PDF statement');
         }
 
         return blob;

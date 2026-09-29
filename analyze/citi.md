@@ -1,10 +1,67 @@
 # Citi Bank Statement API Analysis
 
-**Analysis as of:** 2025-12-03
+**Analysis as of:** 2026-09-29
 
 ## Overview
 
 This document analyzes the Citi bank statement API endpoints and their usage for retrieving user profile information, listing accounts, accessing statements, and downloading statement PDFs.
+
+Payload examples use synthetic identifiers, names, dates, balances, and account
+numbers. They preserve field types and relationships, not captured customer values.
+
+## Current scope and evidence
+
+The authenticated credit-card dashboard issued the documented welcome-message
+and account-balances GET requests, both with HTTP 200. The scoped session has one
+credit card; no bank, loan, brokerage, or retirement accounts appear in the
+statement-eligible response. These other product flows remain unverified.
+
+Opening **View Statements** issued the existing eligible-accounts POST with
+`transactionCode: "1079_statements"`, followed by the existing card statement-list
+POST with the selected `accountId`. Both returned HTTP 200. The list contained
+fourteen monthly statement entries across three year groups. Its newest returned
+statement is not the dashboard's latest closing date: do not infer that every
+month must have an available PDF.
+
+The bank automatically requested the newest listed statement using the existing
+`recent/retrieve` POST with `accountId`, its exact `MM/DD/YYYY` `statementDate`,
+and `requestType: "RECENT STATEMENTS"`. That response was HTTP 200 with
+`Content-Type: application/pdf`. **View All Statements** opened a yearly-filtered
+list matching the available dates. Its Download button saved a four-page PDF
+that parsed and rendered without repair or warnings. The selected card mask
+and closing date matched the document; the PDF writes the date as `MM/DD/YY`.
+This establishes the bank-side source document, not extension download acceptance.
+
+The current eligible response has `bankHostSystemDownFlag`,
+`cardsHostSystemDownFlag`, and `isCardsHostSystemDownFlag` in addition to the
+account arrays. A service-outage response must not be reported as a genuine empty
+account list.
+
+The original extension loaded the same single card and fourteen available
+statements successfully. No endpoint migration is needed for this scope. Local
+edge-case probes exposed timezone-dependent calendar conversion, permissive
+invalid-date normalization, skipped malformed response groups, account-ID suffix
+mask fallback, and insufficient PDF-body validation; these are separate from the
+successful ordinary bank-UI path.
+
+## Shared contract mapping and validation
+
+- Keep the existing readable `bcsid` session/profile identity and welcome name.
+  Cross-user switching and authentication lifecycle are not established here.
+- Use eligible-account IDs as opaque selectors, not account numbers. For the
+  observed card, the nickname's trailing digits agree with the dashboard's
+  `displayAccountNumber`; expose these as the mask. A missing display mask must
+  not silently fall back to an opaque ID suffix.
+- Retain `statementDate` exactly as the download identifier (`MM/DD/YYYY`), while
+  converting the calendar date to UTC midnight for the shared statement date.
+  Reject malformed and impossible dates before listing or downloading.
+- Explicit empty account/month arrays are valid. Host-down flags, malformed
+  account entries, or missing/invalid year/month groups are errors, not empty or
+  partial success. The PDF must have the expected MIME type and `%PDF-` prefix;
+  these guards do not replace full document acceptance checks.
+- Archived-statement requests, annual summaries, and non-card download routes are
+  outside the observed scope. The existing bank/loan account mappings remain
+  compatibility paths, not proof that their card-route downloads work.
 
 ## Base URL
 
@@ -16,9 +73,10 @@ https://online.citi.com/gcgapi/prod/public/v1
 
 ## Authentication
 
-All API requests require authentication via cookies and headers:
+The exercised bank requests include cookies and application headers. The names
+below describe observed/historical context, not a proven minimal requirement set:
 
-### Required Cookies:
+### Cookie context:
 
 - `citi_authorization` - Base64 encoded authorization token
 - `bcsid` - Session ID
@@ -26,9 +84,9 @@ All API requests require authentication via cookies and headers:
 - `isLoggedIn=true` - Login state flag
 - Additional session management cookies
 
-### Required Headers:
+### Observed application headers:
 
-- `appVersion`: `CBOL-ANG-2025-11-02`
+- `appVersion`: Application build value; do not treat a historical version as permanent
 - `businessCode`: `GCB`
 - `channelId`: `CBOL`
 - `client_id`: Client UUID
@@ -51,9 +109,9 @@ All API requests require authentication via cookies and headers:
 ```json
 {
   "welcomeData": {
-    "firstName": "JOHN",
-    "lastLoginTime": "Oct. 12, 2025 (2:33 AM ET)",
-    "lastLoginDevice": "from mobile device."
+    "firstName": "TEST",
+    "lastLoginTime": "Jan. 01, 2000 (12:00 AM ET)",
+    "lastLoginDevice": "<login-device-description>"
   },
   "displayTutorialFlag": false
 }
@@ -81,26 +139,26 @@ All API requests require authentication via cookies and headers:
   "accountLedgerData": [
     {
       "accountMetaData": {
-        "productNameAndDisplayAccountNo": "Citi Strata℠ Card - 4682",
-        "accountId": "b187961b-fcb6-5b94-cf38-714c9d8bcgd1",
+        "productNameAndDisplayAccountNo": "Synthetic Citi Card - 1234",
+        "accountId": "<account-id>",
         "imageUrl": "https://online.citi.com/cards/svc/img/svgImage/408_Moonstone_Updated.svg",
         "productId": "408"
       },
       "accountBalance": {
         "currentBalanceAmount": "0.0",
-        "availableCreditAmount": "5000.0",
+        "availableCreditAmount": "1000.0",
         "statementBalanceAmount": "0.0",
         "minimumPaymentAmount": "0.0",
-        "paymentDueDate": "Nov 15, 2025",
-        "nextStatementClosingDate": "Nov 19, 2025",
+        "paymentDueDate": "Apr 15, 2000",
+        "nextStatementClosingDate": "Mar 31, 2000",
         "remainingStatementBalance": "0.0",
-        "creditLimit": "5000.0",
-        "prevStatementClosingDate": "Oct 17, 2025",
-        "statementStartMonth": "Oct 17"
+        "creditLimit": "1000.0",
+        "prevStatementClosingDate": "Feb 29, 2000",
+        "statementStartMonth": "Feb 29"
       },
       "accountLinkDetail": {
         "statementLink": {
-          "linkUrl": "/US/ag/accstatement?accountInstanceId=b187961b-fcb6-5b94-cf38-714c9d8bcgd1"
+          "linkUrl": "/US/ag/accstatement?accountInstanceId=<account-id>"
         }
       },
       "balanceBreakdownData": {
@@ -118,8 +176,8 @@ All API requests require authentication via cookies and headers:
         },
         "currentBalanceTotal": "0.0"
       },
-      "accountId": "b187961b-fcb6-5b94-cf38-714c9d8bcgd1",
-      "displayAccountNumber": "4682",
+      "accountId": "<account-id>",
+      "displayAccountNumber": "1234",
       "statementsAvailableFlag": true,
       "accountStatusCode": "00",
       "accountType": "IBS_PRIMARY"
@@ -183,13 +241,13 @@ All API requests require authentication via cookies and headers:
     "retirementAccounts": [],
     "cardAccounts": [
       {
-        "accountId": "b187961b-fcb6-5b94-cf38-714c9d8bcgd1",
-        "accountNickname": "Citi Strata℠ Card - 4682",
+        "accountId": "<account-id>",
+        "accountNickname": "Synthetic Citi Card - 1234",
         "imageUrl": "https://online.citi.com/cards/svc/img/svgImage/408_Moonstone_Updated.svg",
         "accountType": "CARDS",
         "paperlessEnrollmentFlag": true,
         "paperlessEligibleFlag": true,
-        "productDesc": "Citi Strata℠ Card"
+        "productDesc": "Synthetic Citi Card"
       }
     ]
   },
@@ -201,7 +259,7 @@ All API requests require authentication via cookies and headers:
 
 - `userType` - Type of user (e.g., "CARDS")
 - `eligibleAccounts.cardAccounts[]` - Array of eligible card accounts
-- `eligibleAccounts.cardAccounts[].accountId` - Account identifier (same as from dashboardTiles API)
+- `eligibleAccounts.cardAccounts[].accountId` - Account identifier (matches the scoped dashboard balances response)
 - `eligibleAccounts.cardAccounts[].accountNickname` - Display name for the account
 - `eligibleAccounts.cardAccounts[].accountType` - Account type (e.g., "CARDS")
 - `eligibleAccounts.cardAccounts[].paperlessEnrollmentFlag` - Whether enrolled in paperless statements
@@ -225,7 +283,7 @@ All API requests require authentication via cookies and headers:
 
 ```json
 {
-  "accountId": "b187961b-fcb6-5b94-cf38-714c9d8bcgd1"
+  "accountId": "<account-id>"
 }
 ```
 
@@ -239,47 +297,47 @@ All API requests require authentication via cookies and headers:
 {
   "statementsByYear": [
     {
-      "displayYearTitle": "2025",
+      "displayYearTitle": "2000",
       "annualAccountSummaryEligibleFlag": true,
       "annualAccountSummaryUrlDetails": {
         "documentUrl": "/US/ag/spendsummary?accountId=",
-        "documentUrlLabel": "2024 Annual Account Summary"
+        "documentUrlLabel": "1999 Annual Account Summary"
       },
       "statementsByMonth": [
         {
-          "displayDate": "July 17",
-          "statementDate": "07/17/2025"
+          "displayDate": "March 31",
+          "statementDate": "03/31/2000"
         },
         {
-          "displayDate": "June 18",
-          "statementDate": "06/18/2025"
+          "displayDate": "February 29",
+          "statementDate": "02/29/2000"
         },
         {
-          "displayDate": "May 19",
-          "statementDate": "05/19/2025"
+          "displayDate": "January 31",
+          "statementDate": "01/31/2000"
         }
       ]
     },
     {
-      "displayYearTitle": "2024",
+      "displayYearTitle": "1999",
       "annualAccountSummaryEligibleFlag": false,
       "statementsByMonth": [
         {
-          "displayDate": "December 18",
-          "statementDate": "12/18/2024"
+          "displayDate": "December 31",
+          "statementDate": "12/31/1999"
         },
         {
-          "displayDate": "November 19",
-          "statementDate": "11/19/2024"
+          "displayDate": "November 30",
+          "statementDate": "11/30/1999"
         }
       ]
     }
   ],
   "archivedStatementDetails": {
     "archivedStatementsByMonth": [],
-    "archivedStatementRequestStartDate": "11/17/2025"
+    "archivedStatementRequestStartDate": "01/01/2000"
   },
-  "accountOpenDate": "01/03/2022",
+  "accountOpenDate": "01/01/1999",
   "archivedStatementsEligibleFlag": true,
   "estatementEnrollmentFlag": true,
   "accountSubtype": ""
@@ -314,8 +372,8 @@ All API requests require authentication via cookies and headers:
 
 ```json
 {
-  "accountId": "b187961b-fcb6-5b94-cf38-714c9d8bcgd1",
-  "statementDate": "07/17/2025",
+  "accountId": "<account-id>",
+  "statementDate": "03/31/2000",
   "requestType": "RECENT STATEMENTS"
 }
 ```
