@@ -35,9 +35,11 @@ The statement period ID has an opaque numeric prefix and a date suffix; the pref
 is not the overview UUID. The observed suffix is month-end. Use the explicit
 `month`/`year` fields for requests rather than reconstructing identity from the ID.
 
-Scope is checking only. Savings/credit are absent and remain unverified; at the
-user's request, their existing account-discovery and mask behavior is unchanged.
-In particular, their historical ID-suffix masks are not verified account numbers.
+Real statement/download validation covers checking only. Savings/credit are
+absent. Savings now follows the same account-ID and account-number validation
+policy as checking, using the separately validated query described below; a
+non-null savings response and savings PDF download remain untested. Credit
+discovery and its historical ID-suffix mask remain unchanged and unverified.
 
 ## API Endpoint
 
@@ -55,7 +57,9 @@ In particular, their historical ID-suffix masks are not verified account numbers
 
 **Authentication**: Cookie-based (session cookies from login)
 
-**Note**: Chime uses Automatic Persisted Queries (APQ) with MD5 hashes. All requests include an `extensions.persistedQuery` field instead of full query text.
+**Note**: The observed bank UI uses Automatic Persisted Queries (APQ) with MD5
+hashes. The extension retains those queries where applicable; its savings-detail
+lookup uses full query text, which the server also accepted in a read-only probe.
 
 ## Persisted Query Mechanism
 
@@ -327,14 +331,51 @@ Only the matched account number's last four digits enter the shared Account.
 Do not return the full account/routing number to the popup. Missing or mismatched
 checking details must fail explicitly rather than reverting to a UUID suffix.
 
+## Savings account-number lookup
+
+The public web application's Account Info and Account Details query definitions
+select account numbers only from `primary_funding_account`. Their persisted hashes
+cannot be reused as if they also selected savings details.
+
+A read-only authenticated request with the following full query returned HTTP 200,
+no GraphQL errors, and `data.me.bank_account_v2.savings_account: null` in the
+checking-only session:
+
+```graphql
+query SavingsAccountInfoQuery {
+  me {
+    bank_account_v2 {
+      savings_account {
+        id
+        account_number
+      }
+    }
+  }
+}
+```
+
+This verifies that the endpoint accepts full query text and these savings fields,
+not that populated savings details or downloads have been tested. When the
+overview contains a savings account, issue this query, require the same account
+ID and a digit-only account number, and expose only its last four digits. Missing
+or mismatched details must fail explicitly, never fall back to the UUID suffix.
+Do not reuse the checking account number for savings. An explicitly null overview
+savings account requires no additional request.
+
 ## Mapping and failure handling
 
 The existing readable-cookie session/profile mapping is retained. Login,
 refresh, cross-user switching, and the historical `__Host-authn` fallback were
 not independently validated. The extension does not manage authentication.
 
-Profile and account responses must contain their expected objects. A missing
-statement list is not equivalent to an empty one; an explicit empty array or
+Profile and account responses must contain their expected objects. Only an explicit
+`primary_funding_account: null` or `savings_account: null` means that respective
+account is absent. A missing field, malformed account object, or missing/blank/
+non-string ID must fail before requesting its details; otherwise the extension
+could cache a false "no accounts" result. This validation applies to checking and
+savings, not the unchanged credit mapping.
+
+A missing statement list is not equivalent to an empty one; an explicit empty array or
 absent type bucket can legitimately mean no statements. Invalid period IDs or
 month/year fields must fail rather than silently dropping rows or normalizing
 an invalid month. The shared statement date is the first day of the selected

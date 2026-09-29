@@ -1,7 +1,7 @@
 /**
  * Chime Bank API implementation for retrieving bank statements
  * @see analyze/chime.md
- * Uses GraphQL Automatic Persisted Queries (APQ) with static MD5 hashes.
+ * Uses the bank's persisted queries and a savings account-number query.
  */
 
 /** @type {string} */
@@ -21,18 +21,33 @@ const HASHES = {
     GetMonthlyPdfStatementQuery: 'md5:409087bebf32f903eaab1e1498e1a724',
 };
 
+const SAVINGS_ACCOUNT_INFO_QUERY = `
+    query SavingsAccountInfoQuery {
+        me {
+            bank_account_v2 {
+                savings_account {
+                    id
+                    account_number
+                }
+            }
+        }
+    }
+`;
+
 /**
- * Make a Chime GraphQL APQ request.
+ * Make a Chime GraphQL request using a persisted hash or full query text.
  * @param {string} operationName
  * @param {Record<string, any>} variables
- * @param {string} hash
+ * @param {string | {query: string}} queryDocument
  * @returns {Promise<any>} JSON response body
  */
-async function graphQL(operationName, variables, hash) {
+async function graphQL(operationName, variables, queryDocument) {
     const body = JSON.stringify({
         operationName,
         variables,
-        extensions: { persistedQuery: { version: 1, sha256Hash: hash } },
+        ...(typeof queryDocument === 'string'
+            ? { extensions: { persistedQuery: { version: 1, sha256Hash: queryDocument } } }
+            : queryDocument),
     });
 
     const headers = {
@@ -144,6 +159,20 @@ function mapAccountType(name) {
 }
 
 /**
+ * @param {string} accountId
+ * @param {any} details
+ * @param {'checking' | 'savings'} type
+ * @returns {string}
+ */
+function accountNumberMask(accountId, details, type) {
+    if (!isObject(details) || details.id !== accountId ||
+        typeof details.account_number !== 'string' || !/^\d{4,}$/.test(details.account_number)) {
+        throw new Error(`Invalid or mismatched Chime ${type} account details`);
+    }
+    return details.account_number.slice(-4);
+}
+
+/**
  * Retrieve accounts via HomeFeedAccountsQuery.
  * @param {import('./bank.types').Profile} profile
  * @returns {Promise<import('./bank.types').Account[]>}
@@ -156,28 +185,32 @@ export async function getAccounts(profile) {
         const out = [];
 
         const primary = root.primary_funding_account;
-        if (primary && primary.id) {
+        if (primary !== null) {
+            if (!isObject(primary) || typeof primary.id !== 'string' || !primary.id.trim()) {
+                throw new Error('Invalid Chime checking account data');
+            }
             const info = await graphQL('AccountInfoQuery', {}, HASHES.AccountInfoQuery);
             const details = info.data.me?.bank_account_v2?.primary_funding_account;
-            if (!isObject(details) || details.id !== primary.id ||
-                typeof details.account_number !== 'string' || !/^\d{4,}$/.test(details.account_number)) {
-                throw new Error('Invalid or mismatched Chime checking account details');
-            }
             out.push({
                 profile,
                 accountId: String(primary.id),
                 accountName: primary.account_name || 'Checking',
-                accountMask: details.account_number.slice(-4),
+                accountMask: accountNumberMask(primary.id, details, 'checking'),
                 accountType: mapAccountType(primary.account_name || 'Checking'),
             });
         }
         const savings = root.savings_account;
-        if (savings && savings.id) {
+        if (savings !== null) {
+            if (!isObject(savings) || typeof savings.id !== 'string' || !savings.id.trim()) {
+                throw new Error('Invalid Chime savings account data');
+            }
+            const info = await graphQL('SavingsAccountInfoQuery', {}, { query: SAVINGS_ACCOUNT_INFO_QUERY });
+            const details = info.data.me?.bank_account_v2?.savings_account;
             out.push({
                 profile,
                 accountId: String(savings.id),
                 accountName: savings.account_name || 'Savings',
-                accountMask: String(savings.id).slice(-4),
+                accountMask: accountNumberMask(savings.id, details, 'savings'),
                 accountType: /** @type {import('./bank.types').AccountType} */('Savings'),
             });
         }

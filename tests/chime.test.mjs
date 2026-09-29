@@ -256,6 +256,58 @@ describe('Chime API', () => {
             }
         });
 
+        it('rejects missing or malformed checking accounts before requesting details', async () => {
+            for (const primary of [
+                undefined, false, 0, '', [], {},
+                { account_name: 'Checking' },
+                { id: null }, { id: 1234 }, { id: {} }, { id: '' }, { id: ' \t' },
+            ]) {
+                const callsBefore = mockFetch.mock.calls.length;
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true,
+                    json: async () => ({
+                        data: { user: { bank_account_v2: {
+                            ...(primary === undefined ? {} : { primary_funding_account: primary }),
+                            savings_account: null,
+                            secured_credit_account: null,
+                        } } },
+                    }),
+                }));
+                await assert.rejects(getAccounts(mockProfile), /Invalid Chime checking account data/);
+                assert.equal(mockFetch.mock.calls.length, callsBefore + 1);
+                assert.equal(JSON.parse(mockFetch.mock.calls.at(-1).arguments[1].body).operationName, 'HomeFeedAccountsQuery');
+            }
+        });
+
+        it('uses savings account details when checking is explicitly absent', async () => {
+            mockFetch.mock.mockImplementationOnce(async () => ({
+                ok: true,
+                json: async () => ({
+                    data: { user: { bank_account_v2: {
+                        primary_funding_account: null,
+                        savings_account: { id: 'savings-id-456', account_name: 'Savings' },
+                        secured_credit_account: { id: 'credit-id-789', account_name: 'Credit Card' },
+                    } } },
+                }),
+            }));
+            mockFetch.mock.mockImplementationOnce(async () => ({
+                ok: true,
+                json: async () => ({ data: { me: { bank_account_v2: {
+                    savings_account: { id: 'savings-id-456', account_number: '000000005678' },
+                } } } }),
+            }), 1);
+            assert.deepEqual(await getAccounts(mockProfile), [
+                { profile: mockProfile, accountId: 'savings-id-456', accountName: 'Savings', accountMask: '5678', accountType: 'Savings' },
+                { profile: mockProfile, accountId: 'credit-id-789', accountName: 'Credit Card', accountMask: '-789', accountType: 'CreditCard' },
+            ]);
+            assert.equal(mockFetch.mock.calls.length, 2);
+            const body = JSON.parse(mockFetch.mock.calls[1].arguments[1].body);
+            assert.equal(body.operationName, 'SavingsAccountInfoQuery');
+            assert.deepEqual(body.variables, {});
+            assert.match(body.query, /savings_account\s*\{\s*id\s+account_number\s*\}/);
+            assert.equal(body.extensions, undefined);
+        });
+
         it('should extract multiple accounts including savings and credit', async () => {
             const mockResponse = {
                 data: {
@@ -295,6 +347,12 @@ describe('Chime API', () => {
                     primary_funding_account: { id: 'checking-id-123', account_number: '000000001234' },
                 } } } }),
             }), 1);
+            mockFetch.mock.mockImplementationOnce(async () => ({
+                ok: true,
+                json: async () => ({ data: { me: { bank_account_v2: {
+                    savings_account: { id: 'savings-id-456', account_number: '000000005678' },
+                } } } }),
+            }), 2);
             const accounts = await getAccounts(mockProfile);
 
             assert.strictEqual(accounts.length, 3);
@@ -306,12 +364,59 @@ describe('Chime API', () => {
             const savings = accounts.find(a => a.accountType === 'Savings');
             assert.strictEqual(savings.accountId, 'savings-id-456');
             assert.strictEqual(savings.accountName, 'Savings');
-            assert.strictEqual(savings.accountMask, '-456');
+            assert.strictEqual(savings.accountMask, '5678');
 
             const credit = accounts.find(a => a.accountType === 'CreditCard');
             assert.strictEqual(credit.accountId, 'credit-id-789');
             assert.strictEqual(credit.accountName, 'Credit Card');
             assert.strictEqual(credit.accountMask, '-789');
+            assert.equal(checking.accountMask, '1234');
+            assert.equal(mockFetch.mock.calls.length, 3);
+            assert.ok(!JSON.stringify(accounts).includes('000000001234'));
+            assert.ok(!JSON.stringify(accounts).includes('000000005678'));
+        });
+
+        it('rejects missing or malformed savings accounts before requesting details', async () => {
+            for (const savings of [
+                undefined, false, 0, '', [], {}, { account_name: 'Savings' },
+                { id: null }, { id: 1234 }, { id: {} }, { id: '' }, { id: ' \t' },
+            ]) {
+                const before = mockFetch.mock.calls.length;
+                mockFetch.mock.mockImplementation(async () => ({
+                    ok: true,
+                    json: async () => ({ data: { user: { bank_account_v2: {
+                        primary_funding_account: null,
+                        ...(savings === undefined ? {} : { savings_account: savings }),
+                        secured_credit_account: null,
+                    } } } }),
+                }));
+                await assert.rejects(getAccounts(mockProfile), /Invalid Chime savings account data/);
+                assert.equal(mockFetch.mock.calls.length, before + 1);
+            }
+        });
+
+        it('rejects invalid savings details without using a UUID or checking number', async () => {
+            for (const details of [
+                null, {}, { id: 'different-id', account_number: '000000005678' },
+                { id: 'savings-id' }, { id: 'savings-id', account_number: 5678 },
+                { id: 'savings-id', account_number: '' }, { id: 'savings-id', account_number: 'abc5678' },
+                { id: 'savings-id', account_number: '123' },
+            ]) {
+                mockFetch.mock.mockImplementation(async (_, options) => ({
+                    ok: true,
+                    json: async () => JSON.parse(options.body).operationName === 'HomeFeedAccountsQuery'
+                        ? { data: { user: { bank_account_v2: {
+                            primary_funding_account: null,
+                            savings_account: { id: 'savings-id', account_name: 'Savings' },
+                            secured_credit_account: null,
+                        } } } }
+                        : { data: { me: { bank_account_v2: {
+                            primary_funding_account: { id: 'savings-id', account_number: '000000001234' },
+                            savings_account: details,
+                        } } } },
+                }));
+                await assert.rejects(getAccounts(mockProfile), /Invalid or mismatched Chime savings account details/);
+            }
         });
 
         it('should return empty array when no accounts exist', async () => {
@@ -337,6 +442,7 @@ describe('Chime API', () => {
 
             const accounts = await getAccounts(mockProfile);
             assert.strictEqual(accounts.length, 0);
+            assert.equal(mockFetch.mock.calls.length, 1);
         });
     });
 
