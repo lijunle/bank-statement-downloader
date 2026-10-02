@@ -175,12 +175,12 @@ Inapplicable: <operations and reasons>
 Next action: <only if needed>
 ```
 
-Do not include credentials, cookies, tokens, session identifiers, personal
-filenames or paths, account details, statement contents, or unsanitized errors.
-Routine validation-run logs do not belong in [analyze/](../analyze/); update a
-bank's analysis only for new bank/API observations, following the
-[Bank Analysis Format](bank-analysis-format.md). Remove only task-created temporary
-artifacts when no longer needed; do not clear the user's profile or downloads.
+Report the outcome in the task handoff or PR description, following the reporting
+boundaries and sanitization rules in [Bank Analysis Format](bank-analysis-format.md#writing-rules).
+If validation reveals an API fact to document, update the bank's reference using
+that format.
+Remove only task-created temporary artifacts when no longer needed; do not clear
+the user's profile or downloads.
 
 ## On discrepancies: targeted diagnostics
 

@@ -44,18 +44,17 @@ inspection on the relevant page before performing each operation:
 4. Repeat for materially different account types or download flows within scope.
 
 Use upstream `list_network_requests` and `get_network_request` to inspect the
-requests and responses associated with each action, then write sanitized findings
-directly into `analyze/<bank>.md` as observations are made. No intermediate
-trace export or conversion is needed. Prefer targeted inspection over dumping an
-entire session. Include redirects, document responses, and relevant secondary
-domains; a PDF need not arrive as a fetch request on the bank's main domain.
-Re-select the page if the site opens a new tab.
+requests and responses associated with each action. Record API findings in
+`analyze/<bank>.md` using the [Bank Analysis Format](bank-analysis-format.md).
+No intermediate trace export or conversion is needed. Prefer targeted inspection
+over dumping an entire session. Include redirects, document responses, and
+relevant secondary domains; a PDF need not arrive as a fetch request on the bank's
+main domain. Re-select the page if the site opens a new tab.
 
 In the pinned CLI, network listings default to the current navigation;
-`includePreservedRequests` covers only the last three navigations. Inspect and
-record sanitized findings after each action, before navigating further or
-restarting the browser. Request IDs are session-local references, not durable
-identifiers.
+`includePreservedRequests` covers only the last three navigations. Inspect each
+operation before navigating further or restarting the browser, and record its
+API findings in the relevant reference section.
 
 Raw captures and PDFs are private artifacts, not repository deliverables. If raw
 artifacts must be saved locally, keep them outside the repository and do not paste
@@ -66,16 +65,13 @@ what must be recaptured. Missing evidence must not be replaced with guessed endp
 
 ## 3. Update the bank analysis
 
-Maintain `analyze/<bank>.md` using the existing bank's filename convention. Update
-the relevant sections instead of replacing valid analysis wholesale. Keep bank
-details here, not in the generic browser skill.
-
-Reconcile new observations with existing findings and review the report against
-the [Bank Analysis Format](bank-analysis-format.md). Return to the browser for
-missing evidence before relying on an uncertain conclusion to implement an API call.
+Update `analyze/<bank>.md` using the existing filename convention and the rules
+and template in [Bank Analysis Format](bank-analysis-format.md). Return to evidence
+collection when information needed for implementation is missing.
 
 **Complete when:** the document explains where each required dynamic value comes
-from and how the scoped flow works, with uncertainty visible rather than hidden.
+from, how the scoped operations connect, and how their fields map to the shared
+contract, with remaining gaps identified according to the format.
 
 ## 4. Implement or update the integration
 
