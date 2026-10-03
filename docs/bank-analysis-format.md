@@ -16,11 +16,17 @@ follow the [shared bank contract](../bank/bank.types.ts).
 - **Actionable wording:** lead with what to call or read, input sources,
   transformations, and result handling. Pair restrictions with the supported
   action or explicit failure behavior.
+- **Implementation completeness:** for covered flows, provide the exact sources,
+  requests, parsing and mapping rules needed to implement them. Code links establish
+  provenance; they do not replace necessary instructions. When shortening text,
+  retain conditions and concrete values that affect implementation.
 - **Evidence and uncertainty:** identify current claims as Observed, Code-derived,
   or Unverified, citing the UI trigger or code source. Write `Unknown` with the
   needed evidence when information is unavailable. Describe protocol behavior
   (status codes, fields, empty results), not the outcome of a test run. A header
   observed in a request is not automatically a demonstrated requirement.
+  Label implementation rules and heuristics Code-derived, and state any unverified
+  bank-side meaning explicitly; implementation behavior is not a protocol guarantee.
 - **One definition per fact:** define each operation and transformation once,
   then reference its operation ID. Replace superseded and duplicate descriptions
   in place. Describe simultaneous variants by their applicable conditions.
@@ -89,7 +95,7 @@ template; retain redaction placeholders in sanitized examples.
 
 **Request, for HTTP:** <method, origin, endpoint, format and body; explicitly state an empty body>
 **Query, for GraphQL:** <operation name, variables, persisted-query version/hash or full query text>
-**Source and extraction, for non-HTTP operations:** <DOM/storage/event/computation source and extraction procedure>
+**Source and extraction, for non-HTTP operations:** <exact DOM/storage/event/computation locator, data encoding and extraction conditions; include a minimal example for complex extraction>
 **Inputs:** <fixed values and dynamic inputs, exact sources, transformations and optionality; or None>
 **Headers, for HTTP:** <relevant application headers with values/sources and requirement evidence; reference shared authentication>
 
@@ -97,20 +103,20 @@ template; retain redaction placeholders in sanitized examples.
 **Outputs:** <fields or values consumed by later operations or contract mapping>
 **Errors and empty results:** <recognition and handling, including business errors within successful HTTP responses>
 
-**Selection and association, if choosing accounts/documents:** <ID matching, eligibility, exclusions, deduplication, ambiguity, consolidated-account relationships>
+**Selection and association, if choosing accounts/documents:** <exact matching fields, rule order and conditions, identifier scope, eligibility, exclusions, deduplication, ambiguity, consolidated-account relationships>
 **Pagination and statement coverage, for lists:** <filters, continuation, termination, ordering, available date range; distinguish UI and API paging>
 **State and timing, if stateful:** <mutations, account reselection, reissue/refresh timing, reuse and concurrency constraints>
 **Delivery, for downloads:** <selected reference -> request/generation -> redirects/secondary origins -> decoding -> PDF bytes; reference earlier definitions>
 
 ## Shared contract mapping
 
-| Contract field / flow | Source operation and field | Meaning, conversion and runtime checks |
+| Contract field / flow | Source operation and exact field path | Meaning, conversion, fallback order and runtime checks |
 | --- | --- | --- |
-| Profile.sessionId | <source> | <session association> |
-| Profile.profileId / profileName | <source> | <identity/display rules> |
+| Profile.sessionId | <source> | <session association and identifier scope> |
+| Profile.profileId / profileName | <source> | <identity/display rules, fallback precedence and missing-value handling> |
 | Account.profile / Statement.account | <source> | <profile/account association> |
-| Account.accountId / accountName | <source> | <selector/display rules> |
-| Account.accountMask / accountType | <source> | <actual number suffix and classification> |
+| Account.accountId / accountName | <source> | <selector scope, display rules and missing-value handling> |
+| Account.accountMask / accountType | <source> | <number-suffix extraction; classification codes, conditions and priority> |
 | Statement.statementId | <source> | <document identity and request use> |
 | Statement.statementDate | <source> | <listing/closing/due date or represented month; format, timezone and conversion> |
 | Downloaded Blob | <source> | <binary conversion and runtime checks> |
