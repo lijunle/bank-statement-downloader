@@ -2,77 +2,42 @@
 
 **Analysis as of:** 2026-09-28
 
-## Current scope and evidence
+## Scope and evidence
 
-The authenticated Chime web app issued `UserQuery` and `HomeFeedAccountsQuery`
-on account overview, both returning HTTP 200. Their persisted-query hashes match
-the historical values below. The scoped session has a checking account; savings
-and secured-credit fields are null. Other products have not been exercised.
+**Bank ID:** `chime`
+**Domains:** `https://app.chime.com` hosts the authenticated UI and GraphQL API.
 
-Opening **Profile > Documents** issued `DocumentsQuery` with the same historical
-hash and `account_types: ["credit", "checking", "savings", "unsecured_credit",
-"line_of_credit"]`. The response contained a checking bucket with twenty monthly
-periods; the UI displayed ten on its first page with a next-page control. UI
-pagination is client-side for the observed list: the second page showed the
-remaining ten periods without another GraphQL request.
+| Account type / flow | Evidence basis and source | Scope boundary |
+| --- | --- | --- |
+| Checking | Observed: overview, Profile > Account info, Profile > Documents and monthly PDF action | Account identity, actual number suffix, monthly periods and encoded PDF delivery |
+| Savings | Observed: full-query endpoint accepts the OP-4 fields with a null account; Code-derived: [Chime module](../bank/chime.mjs) | Populated details and savings document delivery are untested |
+| Secured credit | Code-derived: module account and statement mappings | Account-number suffix and document delivery are unverified |
 
-The account overview response contains a string account ID and name but no
-account-number mask. Opening **Profile > Account info** issued `AccountInfoQuery`
-with hash `md5:e57adf8d54262ff92f7b952f3aac90b7`. Its
-`data.me.bank_account_v2.primary_funding_account` contains `id`, `account_number`,
-and `routing_number`. Its ID matched the overview checking ID; its account-number
-suffix did not match the UUID suffix used by the old extension. Derive the checking
-mask from this matched account number, not the UUID.
+## Authentication and session context
 
-The latest bank-UI checking PDF used `GetMonthlyPdfStatementQuery`, the historical
-hash below, and `{account_types: ["checking"], month: 8, year: 2026}`. One response
-bucket contained `name` and `monthly_pdf_statement.encoded_pdf`. The bank UI saved
-a two-page PDF that parsed and rendered without repair or warnings and matched
-Chime, the Account Info number, and the selected month/year. This is bank-side
-evidence, not extension acceptance.
+**Session ownership:** sign in through the bank UI. The browser supplies cookies;
+the module reads session/profile identifiers and leaves login and renewal to Chime.
+**Lifecycle:** expiry timing, cross-user switching, and fallback-cookie behavior
+are Unknown; establishing those rules requires session-lifecycle evidence.
+**Execution context:** run requests in the authenticated `app.chime.com` page with
+`credentials: "include"`.
 
-The statement period ID has an opaque numeric prefix and a date suffix; the prefix
-is not the overview UUID. The observed suffix is month-end. Use the explicit
-`month`/`year` fields for requests rather than reconstructing identity from the ID.
+| Material / context | Source and use |
+| --- | --- |
+| Session identifier | Code-derived: read `id` from `chime_session` (`id=<session-id>&end_ts=<timestamp>`); if it has no `id` component use the cookie value. If absent, use `__Host-authn`; error if neither is available. |
+| Profile identifier | Code-derived: `chime_user_id`, then `__Host-uid`, then the supplied session ID |
+| Request headers | `Content-Type: application/json`, `Accept: */*`, and `chime-timezone` from the browser's resolved timezone, with `America/Los_Angeles` as the module default |
 
-Real statement/download validation covers checking only. Savings/credit are
-absent. Savings now follows the same account-ID and account-number validation
-policy as checking, using the separately validated query described below; a
-non-null savings response and savings PDF download remain untested. Credit
-discovery and its historical ID-suffix mask remain unchanged and unverified.
+Header necessity beyond the accepted request context is Unknown.
 
-## API Endpoint
+## API flow
 
-**URL**: `https://app.chime.com/api/graphql`
+**Sequence:** read the session context; OP-1 provides the profile; OP-2 discovers
+accounts, with OP-3 for a present checking account and OP-4 for a present savings
+account; OP-5 lists periods; OP-6 retrieves the selected month's PDF.
 
-**Method**: POST
-
-**Headers**:
-
-- `Content-Type: application/json`
-- `Accept: */*`
-- `Accept-Encoding: gzip, deflate, br, zstd`
-- `Accept-Language: en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7`
-- `Cookie: [Session cookies]`
-
-**Authentication**: Cookie-based (session cookies from login)
-
-**Note**: The observed bank UI uses Automatic Persisted Queries (APQ) with MD5
-hashes. The extension retains those queries where applicable; its savings-detail
-lookup uses full query text, which the server also accepted in a read-only probe.
-
-## Persisted Query Mechanism
-
-Chime's GraphQL API uses **Automatic Persisted Queries (APQ)** with MD5 hashes:
-
-1. **Hash Format**: `"md5:{hash_value}"` - Despite the field name `sha256Hash`, Chime actually uses MD5 hashes
-2. **Static Values**: The MD5 hash values are **hardcoded** in the Chime application and are the same for all users
-3. **How it works**:
-   - The client sends only the operation name, variables, and a hash of the query
-   - The server looks up the full query text using this hash
-   - This reduces request size and improves performance
-
-**Example persisted query structure**:
+All HTTP operations below use `POST https://app.chime.com/api/graphql` and the
+shared authentication context. The persisted-query request format is:
 
 ```json
 {
@@ -87,229 +52,77 @@ Chime's GraphQL API uses **Automatic Persisted Queries (APQ)** with MD5 hashes:
 }
 ```
 
-**Important**: These hashes identify queries in the observed application build.
-They are not user credentials, but their stability across future deployments is
-not guaranteed. Recheck current UI requests if an operation stops working.
+Use the operation-specific hash listed below. These are public query identifiers.
+OP-4 instead sends `query` text with `operationName` and `variables`, without the
+persisted-query extension.
 
----
+**Common response handling (Code-derived):** parse JSON and require an object with
+an object-valued `data`. A nonempty `errors` array or malformed `errors` value is
+an error; an absent or empty `errors` array is accepted. HTTP failures surface as
+operation errors. Each operation also checks its required data structure.
 
-## 1. Get User Profile Information
+### OP-1: Read the profile
 
-**Operation**: `UserQuery`
+**Purpose and flow:** obtain the checking user's display name.
+**Evidence basis:** Observed: account overview issues `UserQuery`.
+**Context and prerequisites:** authenticated page and supplied session ID.
+**Query:** `UserQuery`, variables `{}`, hash
+`md5:f4a5ebcc4103cf23f7e582af45b0edd0`.
 
-**Request Structure**:
-
-```json
-{
-  "operationName": "UserQuery",
-  "variables": {},
-  "extensions": {
-    "persistedQuery": {
-      "version": 1,
-      "sha256Hash": "md5:f4a5ebcc4103cf23f7e582af45b0edd0"
-    }
-  }
-}
-```
-
-**Response Structure**:
+**Response and processing:** HTTP 200 JSON with `data.me`; keep the name fields.
 
 ```json
-{
-  "data": {
-    "me": {
-      "first_name": "string",
-      "last_name": "string",
-      "username": "string",
-      "email": "string",
-      "phone": "string",
-      "address": "string",
-      "city": "string",
-      "state_code": "string",
-      "zip_code": "string"
-    }
-  }
-}
+{"data":{"me":{"first_name":"Test","last_name":"User"}}}
 ```
 
-**Key Fields**:
+**Outputs:** trimmed name components for the profile; profile ID from the cookie
+precedence above.
+**Errors and empty results:** require `me` to be an object. Join available name
+components with a space; use the profile ID when both components are empty.
 
-- `me.first_name`, `me.last_name`: User name
-- `me.email`: User email address
+### OP-2: Discover accounts
 
----
+**Evidence basis:** Observed: overview issues `HomeFeedAccountsQuery`;
+Code-derived: account selection in the module.
+**Context and prerequisites:** authenticated page and OP-1 profile.
+**Query:** `HomeFeedAccountsQuery`, variables `{}`, hash
+`md5:ca98a6f37e5df3c609f762c922dd5edb`.
 
-## 2. List All Accounts
-
-**Operation**: `HomeFeedAccountsQuery`
-
-**Request Structure**:
-
-```json
-{
-  "operationName": "HomeFeedAccountsQuery",
-  "variables": {},
-  "extensions": {
-    "persistedQuery": {
-      "version": 1,
-      "sha256Hash": "md5:ca98a6f37e5df3c609f762c922dd5edb"
-    }
-  }
-}
-```
-
-**Response Structure**:
+**Response and processing:** HTTP 200 JSON; select
+`data.user.bank_account_v2`.
 
 ```json
 {
   "data": {
     "user": {
       "bank_account_v2": {
-        "savings_account": "object | null",
-        "primary_funding_account": {
-          "id": "string (UUID)",
-          "account_name": "string",
-          "display_balance": {
-            "amount": {
-              "value": "string (decimal)"
-            }
-          }
-        },
-        "secured_credit_account": "object | null"
+        "primary_funding_account": {"id":"<checking-id>","account_name":"Checking"},
+        "savings_account": null,
+        "secured_credit_account": null
       }
     }
   }
 }
 ```
 
-**Key Fields**:
+**Outputs:** account IDs and names; use OP-3/OP-4 for actual number suffixes.
+**Selection and association:** checking and savings each use their named field.
+Only explicit `null` means absent; a present value must be an object with a nonblank
+string ID. Include a secured-credit entry when it supplies an ID.
+**Errors and empty results:** reject a missing account root or malformed checking/
+savings entry. All absent accounts produce an empty list. Credit mapping uses its
+ID suffix as described in the contract table; its number semantics are unverified.
+**Pagination and statement coverage:** no account continuation mechanism is
+established by this response.
 
-- `bank_account_v2.primary_funding_account.id`: Account UUID
-- `bank_account_v2.primary_funding_account.account_name`: Account type (e.g., "Checking")
-- `bank_account_v2.savings_account`: Savings account (if exists)
-- `bank_account_v2.secured_credit_account`: Credit account (if exists)
+### OP-3: Read checking account-number details
 
----
+**Evidence basis:** Observed: Profile > Account info issues `AccountInfoQuery`.
+**Context and prerequisites:** a present checking account from OP-2.
+**Query:** `AccountInfoQuery`, variables `{}`, hash
+`md5:e57adf8d54262ff92f7b952f3aac90b7`.
 
-## 3. List Available Statements
-
-**Operation**: `DocumentsQuery`
-
-**Request Structure**:
-
-```json
-{
-  "operationName": "DocumentsQuery",
-  "variables": {
-    "account_types": ["credit", "checking", "savings"]
-  },
-  "extensions": {
-    "persistedQuery": {
-      "version": 1,
-      "sha256Hash": "md5:a17bd74480800ce36bfbc0c4b1516bae"
-    }
-  }
-}
-```
-
-**Request Parameters**:
-
-- `account_types`: Array of account types to query - `["credit", "checking", "savings"]`
-
-**Response Structure**:
-
-```json
-{
-  "data": {
-    "statements": {
-      "statement_accounts": [
-        {
-          "name": "string",
-          "account_type": "string",
-          "statement_periods": [
-            {
-              "display_name": "string (Month Year)",
-              "id": "string (opaque prefix plus YYYYMMDD suffix)",
-              "month": "number",
-              "year": "number"
-            }
-          ]
-        }
-      ]
-    }
-  }
-}
-```
-
-**Key Fields**:
-
-- `statement_accounts`: Array of accounts with available statements
-- `statement_periods`: Array of available statement periods for each account
-- `statement_periods[].month`, `statement_periods[].year`: Used as parameters for downloading statements.
-  Represent the month at UTC midnight on its first day in the shared contract and
-  use UTC month/year when constructing the download request.
-- `statement_periods[].display_name`: Human-readable period name (e.g., "October 2025")
-
----
-
-## 4. Download Statement PDF
-
-**Operation**: `GetMonthlyPdfStatementQuery`
-
-**Request Structure**:
-
-```json
-{
-  "operationName": "GetMonthlyPdfStatementQuery",
-  "variables": {
-    "account_types": ["checking"],
-    "month": 10,
-    "year": 2025
-  },
-  "extensions": {
-    "persistedQuery": {
-      "version": 1,
-      "sha256Hash": "md5:409087bebf32f903eaab1e1498e1a724"
-    }
-  }
-}
-```
-
-**Request Parameters**:
-
-- `account_types`: Array with single account type - `["checking"]`, `["savings"]`, or `["credit"]`
-- `month`: Month number (1-12)
-- `year`: Year (e.g., 2025)
-
-**Parameter Source**: The `month` and `year` values come from the `DocumentsQuery` response (`statement_periods` array).
-
-**Response Structure**:
-
-```json
-{
-  "data": {
-    "statements": {
-      "statement_accounts": [
-        {
-          "name": "string",
-          "monthly_pdf_statement": {
-            "encoded_pdf": "string (base64)"
-          }
-        }
-      ]
-    }
-  }
-}
-```
-
-**Key Fields**:
-
-- `monthly_pdf_statement.encoded_pdf`: Base64-encoded PDF file content. Decode to get the actual PDF binary.
-
-## Checking account-number lookup
-
-`AccountInfoQuery` uses an empty variables object and persisted hash
-`md5:e57adf8d54262ff92f7b952f3aac90b7`. Its observed response shape is:
+**Response and processing:** HTTP 200 JSON:
 
 ```json
 {
@@ -317,8 +130,8 @@ not guaranteed. Recheck current UI requests if an operation stops working.
     "me": {
       "bank_account_v2": {
         "primary_funding_account": {
-          "id": "<same-checking-id-as-overview>",
-          "account_number": "<checking-account-number>",
+          "id": "<checking-id>",
+          "account_number": "000000001234",
           "routing_number": "<routing-number>"
         }
       }
@@ -327,19 +140,18 @@ not guaranteed. Recheck current UI requests if an operation stops working.
 }
 ```
 
-Only the matched account number's last four digits enter the shared Account.
-Do not return the full account/routing number to the popup. Missing or mismatched
-checking details must fail explicitly rather than reverting to a UUID suffix.
+**Outputs:** the last four digits of `account_number`.
+**Selection and association:** require the detail ID to equal OP-2's checking ID.
+**Errors and empty results:** report missing/mismatched details or an account number
+that is not a digit-only string of at least four digits. Only the suffix enters
+the shared Account; the full number and routing number remain local to this read.
 
-## Savings account-number lookup
+### OP-4: Read savings account-number details
 
-The public web application's Account Info and Account Details query definitions
-select account numbers only from `primary_funding_account`. Their persisted hashes
-cannot be reused as if they also selected savings details.
-
-A read-only authenticated request with the following full query returned HTTP 200,
-no GraphQL errors, and `data.me.bank_account_v2.savings_account: null` in the
-checking-only session:
+**Evidence basis:** Observed: the endpoint accepts this query with a null savings
+result; Code-derived: populated-result checks in the module.
+**Context and prerequisites:** a present savings account from OP-2.
+**Query:** `SavingsAccountInfoQuery`, variables `{}`, with this full query text:
 
 ```graphql
 query SavingsAccountInfoQuery {
@@ -354,33 +166,109 @@ query SavingsAccountInfoQuery {
 }
 ```
 
-This verifies that the endpoint accepts full query text and these savings fields,
-not that populated savings details or downloads have been tested. When the
-overview contains a savings account, issue this query, require the same account
-ID and a digit-only account number, and expose only its last four digits. Missing
-or mismatched details must fail explicitly, never fall back to the UUID suffix.
-Do not reuse the checking account number for savings. An explicitly null overview
-savings account requires no additional request.
+**Response and processing:** JSON at `data.me.bank_account_v2.savings_account`.
+The expected populated shape is:
 
-## Mapping and failure handling
+```json
+{"id":"<savings-id>","account_number":"000000005678"}
+```
 
-The existing readable-cookie session/profile mapping is retained. Login,
-refresh, cross-user switching, and the historical `__Host-authn` fallback were
-not independently validated. The extension does not manage authentication.
+**Outputs:** savings account-number suffix.
+**Selection and association:** apply OP-3's ID/number checks to the OP-2 savings ID
+and this savings object. Checking details do not supply savings identity.
+**Errors and empty results:** if OP-2 contains savings but this result is null,
+missing or mismatched, report an error. Skip OP-4 when OP-2 savings is null.
 
-Profile and account responses must contain their expected objects. Only an explicit
-`primary_funding_account: null` or `savings_account: null` means that respective
-account is absent. A missing field, malformed account object, or missing/blank/
-non-string ID must fail before requesting its details; otherwise the extension
-could cache a false "no accounts" result. This validation applies to checking and
-savings, not the unchanged credit mapping.
+### OP-5: List monthly periods
 
-A missing statement list is not equivalent to an empty one; an explicit empty array or
-absent type bucket can legitimately mean no statements. Invalid period IDs or
-month/year fields must fail rather than silently dropping rows or normalizing
-an invalid month. The shared statement date is the first day of the selected
-month at UTC midnight; download month/year are read in UTC.
+**Evidence basis:** Observed: Profile > Documents issues `DocumentsQuery`;
+Code-derived: supported type selection and validation.
+**Context and prerequisites:** an OP-2 account with its internal account type.
+**Query:** `DocumentsQuery`, hash `md5:a17bd74480800ce36bfbc0c4b1516bae`.
+The module sends `{"account_types":["credit","checking","savings"]}` as variables.
+The UI also includes `unsecured_credit` and `line_of_credit`; these are outside
+the module's account mappings.
 
-The download requests one account type. An ambiguous multi-account response must
-not select whichever PDF appears first. Decode the single result and reject
-non-PDF bytes; a `%PDF-` signature alone does not establish complete PDF acceptance.
+**Response and processing:** HTTP 200 JSON:
+
+```json
+{
+  "data": {
+    "statements": {
+      "statement_accounts": [{
+        "name": "Checking",
+        "account_type": "checking",
+        "statement_periods": [{
+          "display_name": "February 2000",
+          "id": "1001_20000229",
+          "month": 2,
+          "year": 2000
+        }]
+      }]
+    }
+  }
+}
+```
+
+**Outputs:** opaque period ID and explicit month/year for each selected period.
+**Selection and association:** select the bucket for `Checking -> checking`,
+`Savings -> savings`, or `CreditCard -> credit`. Require at most one matching
+bucket. Period IDs contain an opaque prefix and date suffix; use the month/year
+fields for period meaning.
+**Errors and empty results:** validate the array and bucket type fields. An absent
+matching bucket or empty periods array produces no statements. Each included period
+requires a nonblank string ID, integer month 1-12, and integer year 1000-9999.
+Malformed or ambiguous data is an error.
+**Pagination and statement coverage:** use the full returned periods array and
+sort newest first. The observed UI pages ten rows at a time from that array;
+date-range retention guarantees are Unknown.
+
+### OP-6: Retrieve a monthly PDF
+
+**Evidence basis:** Observed: the checking monthly PDF action issues
+`GetMonthlyPdfStatementQuery`; Code-derived: decoding and guards.
+**Context and prerequisites:** selected account/type and OP-5 period.
+**Query:** `GetMonthlyPdfStatementQuery`, hash
+`md5:409087bebf32f903eaab1e1498e1a724`, variables:
+
+```json
+{"account_types":["checking"],"month":2,"year":2000}
+```
+
+**Inputs:** one API account type using OP-5's mapping; UTC month and year from the
+shared statement date.
+**Response and processing:** HTTP 200 JSON at
+`data.statements.statement_accounts[0].monthly_pdf_statement.encoded_pdf`.
+The account result also includes `name`; `encoded_pdf` is a base64 string.
+**Delivery and outputs:** decode base64 to bytes, require a `%PDF-` prefix, and
+construct an `application/pdf` Blob.
+**Errors and empty results:** reject invalid dates, malformed account arrays,
+multiple result buckets, missing encoded data, base64 decode errors, and non-PDF
+bytes. An empty download result is an error.
+
+## Shared contract mapping
+
+| Contract field / flow | Source operation and field | Meaning, conversion and runtime checks |
+| --- | --- | --- |
+| Profile.sessionId | Authentication context | Cookie-derived session association |
+| Profile.profileId / profileName | Cookie precedence / OP-1 | String ID; joined trimmed names or ID fallback |
+| Account.profile / Statement.account | Caller profile / selected account | Preserve object association through OP-2 and OP-5 |
+| Account.accountId / accountName | OP-2 named account object | String ID; account name with Checking, Savings or Credit Card default |
+| Account.accountMask / checking, savings | OP-3 / OP-4 | ID-matched actual account number's last four digits |
+| Account.accountMask / credit | OP-2 secured-credit ID | Code-derived ID suffix; actual number suffix is Unknown |
+| Account.accountType | OP-2 | Primary name containing check/saving/credit, default Checking; named savings/credit fields map to Savings/CreditCard |
+| Statement.statementId | OP-5 `id` | Opaque period selector stored unchanged |
+| Statement.statementDate | OP-5 `year`, `month` | First day of the represented month at UTC midnight; OP-6 uses UTC getters |
+| Downloaded Blob | OP-6 | Decoded PDF bytes with runtime signature check |
+
+## Limitations and open questions
+
+- **Untested:** populated savings details and savings/credit PDFs. OP-4 needs
+  a populated account response to establish its real-number mapping end to end.
+- **Unknown:** credit account-number source; the code-derived ID suffix lacks
+  account-number evidence.
+- **Unsupported by the module:** unsecured credit, line of credit, tax forms and
+  other document types.
+- **Unknown:** persisted-query stability across deployments, session expiry/
+  cross-user behavior and document-retention limits. Determine these from their
+  respective bank operations before making broader guarantees.

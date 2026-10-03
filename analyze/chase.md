@@ -1,498 +1,276 @@
-# Chase Bank Statement API Analysis
+# Chase Statement API Analysis
 
 **Analysis as of:** 2026-09-27
 
-## Overview
+## Scope and evidence
 
-This document analyzes the Chase bank APIs used to retrieve user profile information, list accounts, retrieve statements, and download statement PDFs.
+**Bank ID:** `chase`
+**Domains:** sign in at `https://www.chase.com/`; account servicing and statement
+APIs use `https://secure.chase.com`. Asset and analytics hosts are outside the
+statement retrieval sequence.
 
-## Current scope and evidence
+| Account type / flow | Evidence basis and source | Scope boundary |
+| --- | --- | --- |
+| Checking and credit card | Observed: dashboard, Statements & documents, selected account and save action | Current-year standard monthly statements using STAR_MS delivery |
+| Auto loan and mortgage | Observed: account-specific Statements & documents and save links | Same current-year retrieval chain; printed billing dates have product-specific meanings |
+| Other products/document types | Unverified | Additional accounts, accessible PDFs, taxes and year-end documents need separate evidence |
 
-The authenticated account overview at `secure.chase.com/web/auth/dashboard`
-issued `POST /svc/rl/accounts/l4/v1/app/data/list`, returning HTTP 200 and
-`code: "SUCCESS"`. The request had an empty body and
-`Content-Type: application/x-www-form-urlencoded; charset=UTF-8`, superseding the
-historical JSON-body description.
+## Authentication and session context
 
-Its `cache` includes the dashboard tiles, greeting, user metadata, and
-`/svc/rl/accounts/secure/v1/csrf/token/list` responses. Top-level `profileId`
-and tile `accountId` values are numbers; tile masks are strings. The available
-tiles include credit cards (`CARD` / `BAC`), checking (`DDA` / `CHK`), an auto
-loan (`AUTOLOAN` / `ALA`), and a mortgage (`MORTGAGE` / `HMG`). Credit-card
-`productGroupCode` values are not limited to `2`. These observations establish
-account discovery, not statement or download support for every product.
+**Session ownership:** sign in through the bank page; let it establish and renew
+cookies. The module makes credentialed requests without managing token refresh.
+**Execution context:** authenticated page on `secure.chase.com`, with
+`credentials: "include"`.
+**Lifecycle:** expiry timing, cross-user behavior and the relationship between the
+module's `v1st` identifier and bank authentication are Unknown.
 
-Opening the bank's **Statements & documents** link issued
-`POST /svc/rr/documents/secure/idal/v2/docref/list` with HTTP 200. Account-specific
-expansion used `accountFilter=<account-id>` and
-`dateFilter.idalDateFilterType=CURRENT_YEAR`. The selected checking and credit-card
-lists contained five and four statements respectively; the auto-loan list contained
-nine. The mortgage list contained nine `STMT` documents plus a `MORTGAGE_YES`
-year-end statement, which is outside the regular-statement scope.
+| Material / header | Source and use | Evidence basis |
+| --- | --- | --- |
+| Shared session identifier | Read `v1st` from cookies; preserve embedded `=`; error if absent | Code-derived: [Chase module](../bank/chase.mjs) |
+| PDF CSRF token | OP-3 `csrfToken`; also supplied in OP-1's cached CSRF response | Observed API field; module requests OP-3 before each download |
+| POST `Content-Type` | `application/x-www-form-urlencoded; charset=UTF-8` | Observed |
+| POST `Accept` | `application/json, text/plain, */*` | Code-derived request helper |
+| `x-jpmc-channel` / `x-jpmc-csrf-token` | Fixed `id=C30` / `NONE` for the module's JSON requests | Code-derived; distinct from OP-5's actual CSRF query token |
+| `x-jpmc-client-request-id` | Fresh random UUID | Code-derived |
 
-All four bank-UI downloads used the documented `dockey/list` POST and returned
-`docURI: "/svc/rr/documents/secure/idal/v5/pdfdoc/star/list"` and
-`docSOR: "STAR_MS"`. The ensuing PDF GETs returned HTTP 200 and `application/pdf`.
-The checking download's `csrftoken` matched the token in the app-data cache's
-CSRF response. Its `docKey` and `sor` matched the selected dockey response.
-This proves the observed request path, not that every historical header is required.
+The minimum required header/cookie set is Unknown; use the bank's authenticated
+context and the operation-specific sources above.
 
-The checking UI offered a save menu with standard and accessible PDFs. The other
-three selected products offered direct save links. All four standard bank-UI PDFs
-parsed and rendered without repair or warnings and matched the selected account
-mask. Checking's selected date matched the document text; the credit-card closing
-date matched in `MM/DD/YY` form. The mortgage PDF's labelled **Statement date**
-was one day before its list date. The auto-loan PDF instead exposed a labelled
-**Due Date**, twenty days after its list date. Do not equate the document-list date
-with every product's printed billing date. Use the independently saved bank-UI
-PDF's labelled field when comparing a later extension copy for these loan flows.
-These bank-UI checks do not establish extension download acceptance.
+## API flow
 
-The historical direct login URL `/auth/fcc/login` returned HTTP 405 when opened
-with GET. The user instead signed in through the form on `https://www.chase.com/`.
+**Sequence:** read session context; OP-1 supplies profile and accounts; OP-2 lists
+one account's documents; for each download run OP-3, then OP-4, then OP-5.
+All endpoint paths below are relative to `https://secure.chase.com`.
 
-## Base URLs
+**Common response handling (Code-derived):** require an object-valued JSON result.
+If `code` is present, require `"SUCCESS"`; missing codes remain accepted by the
+module. Apply this rule to consumed cached subresponses as well as outer responses.
+HTTP failures are errors. Unrelated cached-service errors need not block an
+operation whose required data is available.
 
-- **Secure API**: `https://secure.chase.com/svc/`
-- **Static Content**: `https://static.chase.com/content/`
-- **Analytics**: `https://analytics.chase.com/events/`
+### OP-1: Read application data for profile and accounts
 
-## API Authentication
-
-The exercised requests use the authenticated page's cookies. Historical cookie
-names below describe the session context, not a proven minimal authentication set:
-
-- `Cookie`: Contains multiple session tokens including:
-  - `AMSESSION`: JWT-based session token
-  - `auth-guid`: Authentication GUID
-  - `auth-sigguid`: Signature GUID
-  - `auth-user-info`: User information token
-  - `PC_1_0`: Profile and customer information
-  - Various other tracking and session cookies
-
-## 1. User Profile & Account Listing
-
-### API: Get Application Data (User Profile & Metadata)
-
-**Endpoint**: `POST /svc/rl/accounts/l4/v1/app/data/list`
-
-**HTTP Method**: POST
-
-**Purpose**: Retrieves comprehensive user profile information, metadata, and greeting name. This is the primary API called on dashboard load that contains user identity, profile settings, and account summary.
-
-**Request Headers**:
-
-- `Content-Type: application/x-www-form-urlencoded; charset=UTF-8`
-- `Cookie`: Session authentication cookies
-
-**Request Body**:
-
-Empty body (not a JSON object).
-
-**Response Structure** (key sections):
-
-All identifiers, names, balances, dates, and document references in examples are
-synthetic or placeholders. Numeric identifiers retain their numeric type.
+**Evidence basis:** Observed: authenticated dashboard load; Code-derived: field
+precedence and validation in the module.
+**Request:** `POST /svc/rl/accounts/l4/v1/app/data/list`, empty body.
+**Context and prerequisites:** authenticated dashboard; shared POST headers.
+**Inputs:** no body parameters.
+**Response and processing:** HTTP 200 JSON:
 
 ```json
 {
   "code": "SUCCESS",
+  "personId": 4001,
+  "profileId": 5001,
   "cache": [
     {
       "url": "/svc/rl/accounts/secure/v1/deck/greeting/list",
-      "usage": "SESSION",
-      "response": {
-        "greetingId": "TIME_OF_DAY",
-        "greetingName": "TEST"
-      }
+      "response": {"greetingName":"TEST"}
     },
     {
       "url": "/svc/rr/accounts/secure/v4/dashboard/tiles/list",
-      "usage": "ONCE",
       "response": {
         "code": "SUCCESS",
-        "defaultAccountId": 1001,
-        "personalTileGroups": [
-          {
-            "customerTileGroupId": "3001",
-            "creditCardAccountTileIds": [-2001],
-            "loanAccountTileIds": [],
-            "creditScoreTileId": 2002,
-            "creditJourneyTileId": 2003
-          }
-        ],
-        "accountTiles": [
-          {
-            "tileId": -2001,
-            "accountId": 1001,
-            "accountOriginationCode": "6613",
-            "accountTileType": "CARD",
-            "cardType": "FREEDOM_PLATINUM",
-            "accountTileDetailType": "BAC",
-            "rewardProgramCode": "0404",
-            "rewardsTypeId": "VP-6610-0414",
-            "mask": "1234",
-            "nickname": "Synthetic Card",
-            "payeeId": -1001,
-            "tileDetail": {
-              "availableBalance": 1000.0,
-              "currentBalance": 0.0,
-              "lastPaymentDate": "20000215",
-              "nextPaymentAmount": 0.0,
-              "nextPaymentDueDate": "20000315",
-              "pastDueAmount": 0.0,
-              "productCode": "VP",
-              "productGroupCode": 2,
-              "cardArtGuid": "<card-art-id>"
-            }
-          }
-        ]
+        "accountTiles": [{
+          "accountId": 1001,
+          "accountTileType": "CARD",
+          "accountTileDetailType": "BAC",
+          "nickname": "Synthetic Card",
+          "mask": "1234",
+          "tileDetail": {"productGroupCode":2}
+        }]
       }
     },
     {
       "url": "/svc/rl/accounts/secure/v1/user/metadata/list",
-      "usage": "SESSION",
-      "response": {
-        "code": "SUCCESS",
-        "personId": 4001,
-        "profileId": 5001,
-        "segment": "CCI",
-        "zipCode": "<zip-code>",
-        "stateCode": "<state-code>",
-        "countryCode": "<country-code>",
-        "maskedEmail": {
-          "domain": "example.test",
-          "prefix": "<prefix>",
-          "suffix": "<suffix>"
-        },
-        "productInfos": [
-          {
-            "accountId": 1001,
-            "rewardsTypeId": "VP-6610-0414",
-            "cardDefaultNickName": "Freedom",
-            "mask": "1234",
-            "nickName": "Synthetic Card",
-            "productId": "CARD-BAC-001"
-          },
-          {
-            "accountId": 1002,
-            "mask": "5678",
-            "nickName": "Synthetic Mortgage",
-            "productId": "MORTGAGE-HMG-004"
-          },
-          {
-            "accountId": 1003,
-            "mask": "9012",
-            "nickName": "Synthetic Auto Loan",
-            "productId": "AUTOLOAN-ALA-446"
-          }
-        ]
-      }
-    }
-  ],
-  "personId": 4001,
-  "profileId": 5001,
-  "currentDateTime": "2000-03-01T00:00:00.000Z"
-}
-```
-
-**Important Fields**:
-
-- `cache[].response.greetingName`: Greeting name
-- `personId`: Person identifier
-- `profileId`: Profile identifier (also available in PC_1_0 cookie as `pfid`)
-- `cache[].response.accountTiles[]`: Detailed list of all accounts with tile information
-  - `accountId`: Unique account identifier
-  - `accountOriginationCode`: Account origination code (e.g., "6610", "6388")
-  - `accountTileType`: Type of account tile ("CARD", "LOAN", etc.)
-  - `accountTileDetailType`: Detail type ("BAC" for credit cards, "HMG" for mortgages, "ALA" for auto loans)
-  - `cardType`: Specific card type (e.g., "FREEDOM_PLATINUM", "UNITED", "SAPPHIRE_RESERVE")
-  - `mask`: Last 4 digits of account number
-  - `nickname`: User-defined account nickname
-  - `payeeId`: Payment identifier (negative of accountId)
-  - `tileDetail.productCode`: Product code (e.g., "VP", "VW", "ME")
-  - `tileDetail.productGroupCode`: Compatibility hint (`2` historically identifies
-    credit cards and `3` loans), not an exhaustive classification. Current credit
-    cards use multiple group values; also inspect the tile/detail type codes.
-  - `tileDetail.currentBalance`: Current account balance
-  - `tileDetail.availableBalance`: Available credit/balance
-  - `tileDetail.nextPaymentDueDate`: Next payment due date (YYYYMMDD format)
-  - `tileDetail.cardArtGuid`: GUID for card artwork/design
-- `cache[].response.productInfos[]`: Simplified account summary list
-  - Contains accountId, mask, nickName, and productId for all account types
-  - `productId` format: `{TYPE}-{CODE}-{NUMBER}` (e.g., "CARD-BAC-001", "MORTGAGE-HMG-004", "AUTOLOAN-ALA-446")
-- `cache[].response.maskedEmail`: Masked email address
-- `cache[].response.zipCode`, `stateCode`, `countryCode`: Address information
-
-**Note**: Do not assume the greeting is a full legal name. The integration uses
-the greeting response and top-level profile metadata rather than reading the
-username from cookies. The app-data response provides the account IDs needed for
-the exercised statement flows.
-
-## 2. List Available Statements
-
-### API: Get Document References
-
-**Endpoint**: `POST /svc/rr/documents/secure/idal/v2/docref/list`
-
-**HTTP Method**: POST
-
-**Purpose**: Retrieves the list of available statements and documents for a specific account.
-
-**Request Headers**:
-
-- `Content-Type: application/x-www-form-urlencoded`
-- `Cookie`: Session authentication cookies
-
-**Request Body** (URL-encoded):
-
-```
-accountFilter={accountId}&dateFilter.idalDateFilterType=CURRENT_YEAR
-```
-
-Example:
-
-```
-accountFilter=1001&dateFilter.idalDateFilterType=CURRENT_YEAR
-```
-
-**Request Parameters**:
-
-- `accountFilter`: The account ID from the account tile
-- `dateFilter.idalDateFilterType`: Date filter type
-  - `CURRENT_YEAR`: Current year's documents
-  - Other filters were described historically but have not been revalidated.
-    The integration currently requests only `CURRENT_YEAR`.
-
-**Response Structure**:
-
-```json
-{
-  "code": "SUCCESS",
-  "payeeId": -1001,
-  "paperless": true,
-  "mailMeACopy": true,
-  "payAllowed": true,
-  "idaldocRefs": [
+      "response": {"code":"SUCCESS","personId":4001,"profileId":5001}
+    },
     {
-      "documentId": "<document-id>",
-      "documentDate": "20000301",
-      "inserts": [],
-      "adaVersionAvailable": false,
-      "pageCount": "4",
-      "documentTypeDesc": "Statement",
-      "languageType": "ENGLISH",
-      "changeInTermsAvailable": false,
-      "adaVlsAvailable": false,
-      "idaldocType": "STMT"
+      "url": "/svc/rl/accounts/secure/v1/csrf/token/list",
+      "response": {"code":"SUCCESS","csrfToken":"<csrf-token>"}
     }
   ]
 }
 ```
 
-**Important Fields**:
+**Outputs:** profile ID/name and account tiles; OP-3 describes the CSRF field's use.
+**Selection and association:**
 
-- `documentId`: Unique identifier for the document (used in download API)
-- `documentDate`: Document-list date in YYYYMMDD format; not necessarily the
-  printed statement or payment due date
-- `documentTypeDesc`: Type of document (e.g., "Statement", "Year-end mortgage")
-- `idaldocType`: Document type code ("STMT" for statements)
-- `pageCount`: Number of pages in the document
+- Use top-level `profileId` when present. Cached profile ID, person ID and supplied
+  session ID provide code-derived fallback sources; validate the profile
+  subresponses used. Convert the chosen identifier to a string.
+- Use direct `greetingName`, otherwise cached greeting; uppercase the first
+  character and lowercase the remainder. With no greeting the module uses the
+  session ID as display fallback. A greeting is a display value, not a legal-name
+  guarantee.
+- The module accepts direct `accountTiles`, then direct `accounts`, otherwise
+  selects the cache URL containing `/dashboard/tiles/`. Require a valid dashboard
+  object and tile array when that cache entry is present.
+- Use `accountId` for document requests and `mask` for the display number. Product
+  metadata's `productInfos` is descriptive and is not an account-loader fallback.
 
-## 3. Get Document Download Key
+**Account classification:** observed tile/detail pairs are `CARD/BAC`,
+`DDA/CHK`, `AUTOLOAN/ALA`, and `MORTGAGE/HMG`. Multiple card group codes exist.
+The module applies these Code-derived rules in order, taking the first match:
 
-### API: Get Document Key
+| Priority | Source and condition | Account type |
+| --- | --- | --- |
+| 1 | `tileDetail.productGroupCode`, falling back to top-level `productGroupCode`: numeric `2` / `3` | CreditCard / Loan |
+| 2 | `accountTileType` is `CARD`, or detail type is `BAC` | CreditCard |
+| 3 | `accountTileType` is `MORTGAGE`/`AUTOLOAN`, or detail type is `HMG`/`HMORTGAGE`/`ALA` | Loan |
+| 4 | Product code contains `CHK`/`DDA`, or lowercase product name contains `checking` | Checking |
+| 5 | Product code contains `SAV`, or lowercase product name contains `saving` | Savings |
+| 6 | Product code contains `CC`/`CREDIT`, or lowercase product name contains `credit` | CreditCard |
+| 7 | Product code contains `MORT`/`MTG`/`LOAN`, or lowercase product name contains `mortgage`/`loan` | Loan |
+| 8 | Any of `cardType`, `rewardsTypeId`, or `cardArtGuid` is populated | CreditCard |
+| 9 | No preceding rule matches | Checking |
 
-**Endpoint**: `POST /svc/rr/documents/secure/idal/v2/dockey/list`
+Detail type uses `accountTileDetailType`, then `tileDetail.detailType`. Product
+code uses the first populated value in `tileDetail.productCode`, `productCode`,
+`type`, `accountType`; product name uses `productName`, then `nickname`.
+The fallback rules describe implementation behavior, not additional observed
+product coverage.
 
-**HTTP Method**: POST
+**Errors and empty results:** apply common response validation. A consumed failed
+dashboard/greeting/metadata subresponse is an error. An explicit empty tile array
+is valid; completeness guarantees for entirely missing account sources are Unknown.
+**Pagination and statement coverage:** no account continuation mechanism is
+established. The module independently invokes OP-1 for profile and account reads.
 
-**Purpose**: Retrieves the document key required for downloading a specific statement.
+### OP-2: List an account's current-year document references
 
-**Request Headers**:
+**Evidence basis:** Observed: Statements & documents and account expansion.
+**Request:** `POST /svc/rr/documents/secure/idal/v2/docref/list`, URL-encoded body.
+**Context and prerequisites:** selected OP-1 account; shared POST headers.
+**Inputs:**
 
-- `Content-Type: application/x-www-form-urlencoded`
-- `Cookie`: Session authentication cookies
+| Field | Value / source |
+| --- | --- |
+| `accountFilter` | Selected account ID from OP-1 |
+| `dateFilter.idalDateFilterType` | Fixed `CURRENT_YEAR` |
 
-**Request Body** (URL-encoded):
-
-```
-accountFilter={accountId}&dateFilter.idalDateFilterType=CURRENT_YEAR&documentId={documentId}
-```
-
-Example:
-
-```
-accountFilter=1001&dateFilter.idalDateFilterType=CURRENT_YEAR&documentId=<document-id>
-```
-
-**Request Parameters**:
-
-- `accountFilter`: The account ID
-- `dateFilter.idalDateFilterType`: Date filter type (same as docref API)
-- `documentId`: The document ID from the docref list response
-
-**Response Structure**:
+**Response and processing:** HTTP 200 JSON:
 
 ```json
 {
   "code": "SUCCESS",
-  "docKey": "<document-key>",
-  "docSOR": "STAR_MS",
-  "docURI": "/svc/rr/documents/secure/idal/v5/pdfdoc/star/list"
+  "idaldocRefs": [{
+    "documentId": "<document-id>",
+    "documentDate": "20000229",
+    "documentTypeDesc": "Statement",
+    "idaldocType": "STMT",
+    "adaVersionAvailable": false
+  }]
 }
 ```
 
-**Important Fields**:
+**Outputs:** selected document ID and document-list date.
+**Selection and association:** the module reads `idaldocRefs` (with code-derived
+`documentRefs`/`documents` alternatives), associates rows with the selected
+account, and skips rows whose supplied account selector identifies another
+account. Include `STMT` or `STATEMENT`; exclude other categories such as
+`MORTGAGE_YES`, notices and tax documents.
+**Errors and empty results:** require an array of row objects and a usable string
+or numeric identifier for every included statement. Invalid rows produce an error
+rather than a partial list; an explicit empty array is valid.
+**Date processing:** select `documentDate`, with `statementDate`/`date` as
+code-derived alternatives. Accept `YYYYMMDD`, ISO calendar dates and valid ISO
+timestamps. Check original calendar components before timestamp conversion;
+calendar-only values become UTC midnight, while timestamp offsets determine the
+instant. Reject unsupported formats and impossible dates.
+**Pagination and statement coverage:** sort included dates newest first. This
+flow requests the current calendar year; additional-year filters and continuation
+semantics are Unknown.
 
-- `docKey`: Document key required for the download request
-- `docSOR`: System of record identifier
-- `docURI`: URI path for the download endpoint
+The listing date identifies the archive entry, while printed dates have separate
+semantics. Card PDFs use an `MM/DD/YY` closing date; mortgage PDFs expose a labelled
+Statement date and auto-loan PDFs a Due Date. Use each field's own meaning rather
+than treating the listing date as a universal billing date.
 
-## 4. Download Statement PDF
+### OP-3: Obtain a PDF CSRF token
 
-### API: Download Document
+**Evidence basis:** Observed: OP-1 cached CSRF response and PDF query token;
+Code-derived: the module's explicit token request.
+**Request:** `POST /svc/rl/accounts/secure/v1/csrf/token/list`, empty body and shared
+POST headers.
+**Context and prerequisites:** authenticated page, immediately before an OP-4/OP-5
+download sequence. There are no additional inputs.
+**Response and processing:** JSON:
 
-**Endpoint**: `GET /svc/rr/documents/secure/idal/v5/pdfdoc/star/list`
-
-**HTTP Method**: GET
-
-**Purpose**: Downloads the PDF file for a specific statement.
-
-**Request Headers**:
-
-- `Cookie`: Session authentication cookies
-- `Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8`
-
-**Request Parameters** (Query String):
-
-```
-docKey={docKey}&sor={docSOR}&adaVersion=false&download=true&csrftoken={csrfToken}
-```
-
-Example:
-
-```
-docKey=<document-key>&sor=STAR_MS&adaVersion=false&download=true&csrftoken=<csrf-token>
-```
-
-**Request Parameters**:
-
-- `docKey`: Document key from the dockey API response
-- `sor`: System of record from the dockey API response
-- `adaVersion`: Whether to download ADA-compliant version (typically `false`)
-- `download`: Set to `true` to trigger download
-- `csrftoken`: Token from `/svc/rl/accounts/secure/v1/csrf/token/list`. Its response
-  is included in the observed app-data cache. The integration requests that
-  endpoint with an empty POST body before each download; it does not guess a cookie
-  value or use a fixed CSRF token.
-
-**Response**: Binary PDF file
-
-The response will be a PDF file with content type `application/pdf`. The filename is typically in the format: `{YYYYMMDD}-statements-{last4digits}-.pdf`
-
-Synthetic example: `20000301-statements-1234-.pdf`
-
-## Account Type Differences
-
-Different account types have slightly different data structures:
-
-### Credit Cards
-
-- `accountTileType`: `CARD`; `accountTileDetailType`: `BAC`
-- `productGroupCode`: Multiple observed values; do not require only `2`
-- `productCode`: Varies by card type (e.g., "VP", "VH", "SW")
-- Statement date typically mid-month
-
-### Mortgages
-
-- `accountTileType`: `MORTGAGE`; `accountTileDetailType`: `HMG`
-- Historical `HMORTGAGE` and group-code mappings remain compatibility fallbacks
-- `productCode`: "H" series
-- Statement date typically beginning of month
-- May include "Year-end mortgage" documents
-
-### Auto Loans
-
-- `accountTileType`: `AUTOLOAN`; `accountTileDetailType`: `ALA`
-- `productCode`: "A" series
-- Statement date typically mid-month
-
-## Complete Workflow Example
-
-### Step 1: Get user profile and all accounts
-
-```
-POST /svc/rl/accounts/l4/v1/app/data/list
-Body: <empty>
+```json
+{"code":"SUCCESS","csrfToken":"<csrf-token>"}
 ```
 
-Extract `accountId` values from the cached dashboard response's `accountTiles`.
-The metadata `productInfos` describe accounts but are not an integration fallback.
+**Outputs:** `csrfToken` for OP-5.
+**Errors and empty results:** apply common response checks and report an absent/
+empty token as an error.
+**State and timing:** obtain a token per module download; reuse/expiry guarantees
+are Unknown.
 
-### Step 2: For each account, get statements
+### OP-4: Resolve a selected document key
 
-```
-POST /svc/rr/documents/secure/idal/v2/docref/list
-Body: accountFilter={accountId}&dateFilter.idalDateFilterType=CURRENT_YEAR
-```
+**Evidence basis:** Observed: the bank's save action requests a document key.
+**Request:** `POST /svc/rr/documents/secure/idal/v2/dockey/list`, URL-encoded body.
+**Context and prerequisites:** selected OP-2 document, its account, and shared
+POST context; module calls this after OP-3.
+**Inputs:** `accountFilter` from OP-1, `documentId` from OP-2, and
+`dateFilter.idalDateFilterType=CURRENT_YEAR`.
+**Response and processing:** HTTP 200 JSON:
 
-### Step 3: For each statement, get download key
-
-```
-POST /svc/rr/documents/secure/idal/v2/dockey/list
-Body: accountFilter={accountId}&dateFilter.idalDateFilterType=CURRENT_YEAR&documentId={documentId}
-```
-
-### Step 4: Download the statement PDF
-
-```
-GET /svc/rr/documents/secure/idal/v5/pdfdoc/star/list?docKey={docKey}&sor={docSOR}&adaVersion=false&download=true&csrftoken={csrfToken}
+```json
+{"code":"SUCCESS","docKey":"<document-key>","docSOR":"STAR_MS","docURI":"/svc/rr/documents/secure/idal/v5/pdfdoc/star/list"}
 ```
 
-## Notes
+**Outputs:** `docKey`, system-of-record value and the indicated PDF path.
+**Errors and empty results:** apply common response checks and require a document
+key. Code-derived aliases are `documentKey` and `sor`; the module defaults absent
+SOR to `STAR_MS`.
+**State and timing:** resolve a key for each selected document. Key lifetime and
+reuse guarantees are Unknown.
 
-1. **Authentication**: Let the bank establish and renew the session through its
-   public sign-in UI. The integration uses page cookies without managing login.
+### OP-5: Download the standard PDF
 
-2. **CSRF Token**: The PDF requests carry the token from the bank's CSRF response;
-   a successful request does not establish which headers are individually mandatory.
+**Evidence basis:** Observed: checking, card, auto-loan and mortgage save actions
+use the STAR_MS PDF route.
+**Request:** `GET /svc/rr/documents/secure/idal/v5/pdfdoc/star/list`, no body.
+**Context and prerequisites:** OP-3 token and OP-4 key for the selected document;
+use browser credentials and document-accepting `Accept`.
 
-3. **Account ID**: The `accountId` is passed unchanged to document APIs. It is not
-   the displayed account number; use the bank's `mask` for identification.
+| Query input | Source / fixed value |
+| --- | --- |
+| `docKey` | OP-4 key |
+| `sor` | OP-4 SOR |
+| `csrftoken` | OP-3 token |
+| `adaVersion` / `download` | `false` / `true` |
 
-4. **Date Filtering**: Only `CURRENT_YEAR` was exercised. Older periods, accessible
-   PDFs, other document categories, and additional accounts remain unverified.
-
-5. **Document Types**: In addition to regular statements (`STMT`), there may be other document types:
-
-   - Tax documents
-   - Year-end summaries
-   - Notices and disclosures
-
-6. **Rate Limiting**: No limit was established in this investigation.
-
-7. **Error Handling**: Reject an explicit non-`SUCCESS` code, including in the
-   cached dashboard or profile responses actually consumed. An outer app-data
-   success does not override a subresponse failure; unrelated cached-service
-   errors need not block the operation. Reject malformed document lists/entries,
-   missing or unusable identifiers for selected statements, invalid dates, and
-   non-PDF download bodies rather than returning empty/partial success. Empty
-   document arrays and intentional non-statement exclusions remain valid.
+Encode query values through URLSearchParams. The module uses the fixed STAR_MS
+path matching the observed `docURI`; other route values require separate evidence.
+**Response and delivery:** HTTP 200 `application/pdf`; read the binary body as a
+Blob. A document filename can contain its listing date and account suffix.
+**Errors and empty results:** report HTTP failures, empty bodies, MIME/signature
+mismatches. Require `application/pdf` (case-insensitive, ignoring parameters) and
+the `%PDF-` prefix.
 
 ## Shared contract mapping
 
-- `Profile.sessionId` uses the existing `v1st` cookie mapping. Its behavior across
-  sign-out and user switching was not validated; do not assume it proves identity.
-- Top-level `profileId` and the cached greeting supply profile identity/display.
-- Tile `accountId`, `nickname`, and `mask` supply account identity, name, and mask.
-  Classify observed loan tile/detail codes before relying on a user-chosen nickname.
-- `STMT` documents become statements; `MORTGAGE_YES` and other categories are
-  excluded. Interpret `YYYYMMDD` as a calendar date at UTC midnight so the popup's
-  ISO-date formatting does not shift the day in positive time zones. ISO calendar
-  dates and valid ISO timestamps remain supported; validate the original calendar
-  components before applying a timestamp's offset. Reject unsupported date formats
-  instead of relying on JavaScript's permissive date normalization.
-- The document ID and account ID feed the key request. PDF bytes become the Blob;
-  MIME type and signature checks reject obvious non-PDF responses but do not
-  replace complete parsing/rendering/content validation.
+| Contract field / flow | Source operation and field | Meaning, conversion and runtime checks |
+| --- | --- | --- |
+| Profile.sessionId | Cookie `v1st` | Module cache/session association; not established as user identity proof |
+| Profile.profileId / profileName | OP-1 | String identifier and formatted greeting with the described fallbacks |
+| Account.profile / Statement.account | Caller profile / selected account | Preserve associations |
+| Account.accountId / accountName | OP-1 tile ID / nickname | String API selector; display falls back to displayName, mask, or generated account label |
+| Account.accountMask | OP-1 `mask` | Observed string number suffix; ID-suffix fallback exists in code but number semantics are unverified |
+| Account.accountType | OP-1 classification | Group/type/detail/name mapping |
+| Statement.statementId | OP-2 `documentId` | String document selector, passed to OP-4 |
+| Statement.statementDate | OP-2 date | Archive/list date, normalized using the documented calendar/timestamp rules |
+| Downloaded Blob | OP-5 | Binary body with empty/MIME/signature guards |
+
+## Limitations and open questions
+
+- **Untested:** additional accounts, older years, accessible PDFs, and alternate
+  `docURI`/SOR routes. OP-2 and OP-4 currently use `CURRENT_YEAR`.
+- **Unsupported by the monthly flow:** tax, notice and year-end document categories.
+- **Unknown:** key/reference retention and expiry, exact required headers,
+  missing-account-source semantics, and `v1st` behavior across sign-out/users.
+- **Unknown:** general relationship between archive dates and printed billing
+  dates. Establish the product's labelled field rather than assuming equal dates.
