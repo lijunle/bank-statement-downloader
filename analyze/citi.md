@@ -1,427 +1,238 @@
-# Citi Bank Statement API Analysis
+# Citi Statement API Analysis
 
 **Analysis as of:** 2026-09-29
 
-## Overview
+## Scope and evidence
 
-This document analyzes the Citi bank statement API endpoints and their usage for retrieving user profile information, listing accounts, accessing statements, and downloading statement PDFs.
+**Bank ID:** `citi`
+**Domains:** `https://online.citi.com` hosts account servicing and the API base
+`https://online.citi.com/gcgapi/prod/public/v1`. Public sign-in is at
+`https://www.citi.com/`.
 
-Payload examples use synthetic identifiers, names, dates, balances, and account
-numbers. They preserve field types and relationships, not captured customer values.
+| Account type / flow | Evidence basis and source | Scope boundary |
+| --- | --- | --- |
+| Credit card | Observed: dashboard, View Statements, View All Statements and Download | Eligible-account selection, recent monthly lists and direct PDF response |
+| Bank and loan accounts | Code-derived: [Citi module](../bank/citi.mjs) | Account mapping exists; non-card statement/download routes are unverified |
+| Brokerage and retirement | Observed: named eligible-response groups; Unverified: populated accounts | The module does not map these groups |
 
-## Current scope and evidence
+## Authentication and session context
 
-The authenticated credit-card dashboard issued the documented welcome-message
-and account-balances GET requests, both with HTTP 200. The scoped session has one
-credit card; no bank, loan, brokerage, or retirement accounts appear in the
-statement-eligible response. These other product flows remain unverified.
+**Session ownership:** complete sign-in through the bank UI. The module uses
+browser cookies with `credentials: "include"` and leaves session renewal to Citi.
+**Lifecycle:** session expiry/recovery timing and cross-user behavior are Unknown.
+**Execution context:** issue requests from the authenticated `online.citi.com`
+page. The relevant headers and their sources are:
 
-Opening **View Statements** issued the existing eligible-accounts POST with
-`transactionCode: "1079_statements"`, followed by the existing card statement-list
-POST with the selected `accountId`. Both returned HTTP 200. The list contained
-fourteen monthly statement entries across three year groups. Its newest returned
-statement is not the dashboard's latest closing date: do not infer that every
-month must have an available PDF.
+| Header / material | Source and handling | Evidence basis |
+| --- | --- | --- |
+| Session/profile association | Readable `bcsid` cookie; report missing cookie as an authentication error | Code-derived |
+| `customersessionid` | `bcsid` when available | Observed on the list request; Code-derived common request helper |
+| `client_id` | Same-named cookie; module uses an empty string if absent | Observed header, Code-derived source |
+| `appversion` | `appVersion` cookie; module default `CBOL-ANG-2025-11-02` | Code-derived; current necessity of the default is Unknown |
+| `businesscode`, `channelid`, `countrycode` | `businessCode`, `channelId`, `countryCode` cookies, defaulting to `GCB`, `CBOL`, `US` | Observed values, Code-derived defaults |
+| `Accept`, `Content-Type` | `application/json` on the common request path, including the PDF POST | Observed |
 
-The bank automatically requested the newest listed statement using the existing
-`recent/retrieve` POST with `accountId`, its exact `MM/DD/YYYY` `statementDate`,
-and `requestType: "RECENT STATEMENTS"`. That response was HTTP 200 with
-`Content-Type: application/pdf`. **View All Statements** opened a yearly-filtered
-list matching the available dates. Its Download button saved a four-page PDF
-that parsed and rendered without repair or warnings. The selected card mask
-and closing date matched the document; the PDF writes the date as `MM/DD/YY`.
-This establishes the bank-side source document, not extension download acceptance.
+The bank page also supplies authorization and session cookies automatically.
+The minimal required header/cookie set is Unknown; the module does not acquire
+or refresh authorization tokens itself.
 
-The current eligible response has `bankHostSystemDownFlag`,
-`cardsHostSystemDownFlag`, and `isCardsHostSystemDownFlag` in addition to the
-account arrays. A service-outage response must not be reported as a genuine empty
-account list.
+## API flow
 
-The existing profile, eligible-account, card-statement-list, and recent-PDF
-routes remain applicable to the observed credit-card flow; no endpoint migration
-is indicated by the current bank-UI evidence.
+**Sequence:** read the session context; OP-1 supplies the profile; OP-2 describes
+the dashboard account and statement entry point; OP-3 supplies eligible accounts;
+OP-4 lists a selected card's dates; OP-5 downloads a selected date.
+The module uses OP-1 and OP-3 for account loading; OP-2 is a UI identity reference.
 
-## Shared contract mapping and validation
+Requests below are relative to the API base above and use the shared authentication
+context. Report non-success HTTP responses as operation errors.
 
-- Keep the existing readable `bcsid` session/profile identity and welcome name.
-  Cross-user switching and authentication lifecycle are not established here.
-- Use eligible-account IDs as opaque selectors, not account numbers. For the
-  observed card, the nickname's trailing digits agree with the dashboard's
-  `displayAccountNumber`; expose the last four digits as the mask, including when
-  a nickname displays five trailing digits. Citi has no five-digit exception in
-  the shared contract. A missing display mask must not silently fall back to an
-  opaque ID suffix.
-- Retain `statementDate` exactly as the download identifier (`MM/DD/YYYY`), while
-  converting the calendar date to UTC midnight for the shared statement date.
-  Reject malformed and impossible dates before listing or downloading.
-- All supported account groups (`cardAccounts`, `bankAccounts`, `loanAccounts`)
-  must be explicit arrays; missing groups are not equivalent to empty arrays.
-  Recognized host-down flags are optional, but each present flag must be boolean:
-  `true` reports unavailability, while other types are malformed responses.
-  Explicit empty account/month arrays remain valid. Malformed account entries or
-  missing/invalid year/month groups are errors, not empty or partial success.
-  The PDF must have the expected MIME type and `%PDF-` prefix; these guards do not
-  replace full document acceptance checks.
-- Archived-statement requests, annual summaries, and non-card download routes are
-  outside the observed scope. The existing bank/loan account mappings remain
-  compatibility paths, not proof that their card-route downloads work.
+### OP-1: Read the welcome name
 
-## Base URL
+**Evidence basis:** Observed: authenticated credit-card dashboard requests
+`GET /digital/customers/globalSiteMessages/welcomeMessage`.
+**Context and prerequisites:** authenticated page and session ID; no request body
+or additional inputs.
+**Response and processing:** HTTP 200 JSON:
 
-All API endpoints use the following base URL:
-
-```
-https://online.citi.com/gcgapi/prod/public/v1
+```json
+{"welcomeData":{"firstName":"TEST"},"displayTutorialFlag":false}
 ```
 
-## Authentication
+**Outputs:** profile display name.
+**Errors and empty results:** Code-derived: require object-valued response and
+`welcomeData`. If supplied, `firstName` must be a string; use `User` for a missing
+or empty name. The supplied session ID is also the module's profile ID.
 
-The exercised bank requests include cookies and application headers. The names
-below describe observed/historical context, not a proven minimal requirement set:
+### OP-2: Read dashboard identity and statement navigation
 
-### Cookie context:
-
-- `citi_authorization` - Base64 encoded authorization token
-- `bcsid` - Session ID
-- `client_id` - Client identifier
-- `isLoggedIn=true` - Login state flag
-- Additional session management cookies
-
-### Observed application headers:
-
-- `appVersion`: Application build value; do not treat a historical version as permanent
-- `businessCode`: `GCB`
-- `channelId`: `CBOL`
-- `client_id`: Client UUID
-- `countryCode`: `US`
-- `accept`: `application/json`
-- `content-type`: `application/json`
-
-## API Endpoints
-
-### 1. User Welcome Message (Profile Name)
-
-**Endpoint:** `GET /digital/customers/globalSiteMessages/welcomeMessage`
-
-**Method:** GET
-
-**Headers:** Same as above
-
-**Response:**
+**Evidence basis:** Observed: dashboard account balances and View Statements.
+**Request:** `GET /cbol/accounts/details/balances?isRedesignPage=true`, no body.
+**Context and prerequisites:** authenticated dashboard; fixed query
+`isRedesignPage=true`.
+**Response and processing:** HTTP 200 JSON with `accountLedgerData`:
 
 ```json
 {
-  "welcomeData": {
-    "firstName": "TEST",
-    "lastLoginTime": "Jan. 01, 2000 (12:00 AM ET)",
-    "lastLoginDevice": "<login-device-description>"
-  },
-  "displayTutorialFlag": false
-}
-```
-
-**Response Fields:**
-
-- `welcomeData.firstName` - User's first name
-- `welcomeData.lastLoginTime` - Last login timestamp with timezone
-- `welcomeData.lastLoginDevice` - Last login device description
-- `displayTutorialFlag` - Whether to display tutorial
-
----
-
-### 2. Account Details and Balances
-
-**Endpoint:** `GET /cbol/accounts/details/balances?isRedesignPage=true`
-
-**Method:** GET
-
-**Response:**
-
-```json
-{
-  "accountLedgerData": [
-    {
-      "accountMetaData": {
-        "productNameAndDisplayAccountNo": "Synthetic Citi Card - 1234",
-        "accountId": "<account-id>",
-        "imageUrl": "https://online.citi.com/cards/svc/img/svgImage/408_Moonstone_Updated.svg",
-        "productId": "408"
-      },
-      "accountBalance": {
-        "currentBalanceAmount": "0.0",
-        "availableCreditAmount": "1000.0",
-        "statementBalanceAmount": "0.0",
-        "minimumPaymentAmount": "0.0",
-        "paymentDueDate": "Apr 15, 2000",
-        "nextStatementClosingDate": "Mar 31, 2000",
-        "remainingStatementBalance": "0.0",
-        "creditLimit": "1000.0",
-        "prevStatementClosingDate": "Feb 29, 2000",
-        "statementStartMonth": "Feb 29"
-      },
-      "accountLinkDetail": {
-        "statementLink": {
-          "linkUrl": "/US/ag/accstatement?accountInstanceId=<account-id>"
-        }
-      },
-      "balanceBreakdownData": {
-        "lastStatementBalance": {
-          "amount": "0.0"
-        },
-        "recentTransactions": {
-          "amount": "0.00"
-        },
-        "cashAdvances": {
-          "amount": "0.0"
-        },
-        "paymentsAndCredits": {
-          "amount": "0.0"
-        },
-        "currentBalanceTotal": "0.0"
-      },
-      "accountId": "<account-id>",
-      "displayAccountNumber": "1234",
-      "statementsAvailableFlag": true,
-      "accountStatusCode": "00",
-      "accountType": "IBS_PRIMARY"
+  "accountLedgerData": [{
+    "accountId": "<card-id>",
+    "accountMetaData": {
+      "accountId": "<card-id>",
+      "productNameAndDisplayAccountNo": "Synthetic Citi Card - 1234"
+    },
+    "displayAccountNumber": "1234",
+    "statementsAvailableFlag": true,
+    "accountType": "IBS_PRIMARY",
+    "accountLinkDetail": {
+      "statementLink": {"linkUrl":"/US/ag/accstatement?accountInstanceId=<card-id>"}
     }
-  ]
+  }]
 }
 ```
 
-**Response Fields:**
+**Outputs:** account selector, display suffix and UI navigation link. The selected
+card's ID associates with OP-3's `accountId`.
+**Selection and association:** use `displayAccountNumber` to interpret the
+selected card's display suffix. Statement availability comes from OP-4 rather
+than from the dashboard's next or previous closing-date balance fields.
+**Errors and empty results:** service-specific failure/empty semantics beyond
+HTTP status are Unknown; this response is not used by the module's account loader.
+**Pagination and statement coverage:** dashboard continuation behavior is Unknown.
 
-- `accountLedgerData[]` - Array of account objects with full details
-- `accountLedgerData[].accountMetaData.accountId` - Unique account identifier (use this for statement APIs)
-- `accountLedgerData[].accountMetaData.productNameAndDisplayAccountNo` - Full account name with last 4 digits
-- `accountLedgerData[].accountMetaData.productId` - Product code
-- `accountLedgerData[].accountBalance.currentBalanceAmount` - Current balance
-- `accountLedgerData[].accountBalance.availableCreditAmount` - Available credit
-- `accountLedgerData[].accountBalance.creditLimit` - Total credit limit
-- `accountLedgerData[].accountBalance.paymentDueDate` - Next payment due date
-- `accountLedgerData[].accountBalance.nextStatementClosingDate` - Next statement closing date
-- `accountLedgerData[].accountLinkDetail.statementLink.linkUrl` - Direct link to statements page
-- `accountLedgerData[].statementsAvailableFlag` - Whether statements are available
-- `accountLedgerData[].displayAccountNumber` - Last 4 digits of account number
-- `accountLedgerData[].accountType` - Account type indicator
+### OP-3: List statement-eligible accounts
 
----
-
-### 3. List Eligible Accounts for Statements
-
-**Endpoint:** `POST /v2/digital/accounts/statementsAndLetters/eligibleAccounts/retrieve`
-
-**Method:** POST
-
-**Headers:** Same as above
-
-**Request Body:**
+**Evidence basis:** Observed: View Statements requests this operation.
+**Request:** `POST /v2/digital/accounts/statementsAndLetters/eligibleAccounts/retrieve`,
+JSON body:
 
 ```json
-{
-  "transactionCode": "1079_statements"
-}
+{"transactionCode":"1079_statements"}
 ```
 
-**Request Parameters:**
-
-- `transactionCode` - Hardcoded value `"1079_statements"` to retrieve statement-eligible accounts
-
-**Response Structure:**
+**Context and prerequisites:** authenticated page and OP-1 profile; the transaction
+code is the fixed statement-selection input.
+**Response and processing:** HTTP 200 JSON:
 
 ```json
 {
   "userType": "CARDS",
-  "fullName": "",
-  "showInvestmentLink": false,
-  "showInvestmentsCIFSLink": false,
-  "showMortgageLink": false,
-  "showCustomerLevelLettersFlag": false,
+  "bankHostSystemDownFlag": false,
+  "cardsHostSystemDownFlag": false,
+  "isCardsHostSystemDownFlag": false,
   "eligibleAccounts": {
+    "cardAccounts": [{
+      "accountId": "<card-id>",
+      "accountNickname": "Synthetic Citi Card - 1234",
+      "accountType": "CARDS",
+      "paperlessEnrollmentFlag": true,
+      "paperlessEligibleFlag": true,
+      "productDesc": "Synthetic Citi Card"
+    }],
     "bankAccounts": [],
     "loanAccounts": [],
     "brokerageAccounts": [],
-    "retirementAccounts": [],
-    "cardAccounts": [
-      {
-        "accountId": "<account-id>",
-        "accountNickname": "Synthetic Citi Card - 1234",
-        "imageUrl": "https://online.citi.com/cards/svc/img/svgImage/408_Moonstone_Updated.svg",
-        "accountType": "CARDS",
-        "paperlessEnrollmentFlag": true,
-        "paperlessEligibleFlag": true,
-        "productDesc": "Synthetic Citi Card"
-      }
-    ]
-  },
-  "isCardsHostSystemDownFlag": false
+    "retirementAccounts": []
+  }
 }
 ```
 
-**Response Fields:**
+**Outputs:** eligible account IDs and display/type information.
+**Selection and association (Code-derived):** map card, bank and loan groups.
+Each entry requires a nonblank string ID and a nickname ending in four or five
+digits; expose the last four digits as its mask. Keep the full nickname as name.
+Card/loan groups map to CreditCard/Loan; bank names containing `saving` map to
+Savings, otherwise Checking. Brokerage/retirement groups are outside this mapping.
+**Errors and empty results:** require all three mapped groups to be arrays,
+including explicit empty arrays. Each present recognized host-down flag must be
+boolean; `true` signals unavailability, another type signals malformed data.
+Reject malformed entries as errors rather than returning a partial list.
+**Pagination and statement coverage:** use the returned eligible groups; no
+continuation input is established.
 
-- `userType` - Type of user (e.g., "CARDS")
-- `eligibleAccounts.cardAccounts[]` - Array of eligible card accounts
-- `eligibleAccounts.cardAccounts[].accountId` - Account identifier (matches the scoped dashboard balances response)
-- `eligibleAccounts.cardAccounts[].accountNickname` - Display name for the account
-- `eligibleAccounts.cardAccounts[].accountType` - Account type (e.g., "CARDS")
-- `eligibleAccounts.cardAccounts[].paperlessEnrollmentFlag` - Whether enrolled in paperless statements
-- `eligibleAccounts.cardAccounts[].paperlessEligibleFlag` - Whether eligible for paperless statements
-- `eligibleAccounts.bankAccounts[]` - Array of eligible bank accounts (empty if none)
-- `eligibleAccounts.loanAccounts[]` - Array of eligible loan accounts (empty if none)
+### OP-4: List a card's available statements
 
-**Note:** The `transactionCode` value `"1079_statements"` is a hardcoded constant required by this API. This endpoint filters accounts to only show those eligible for statement retrieval.
-
----
-
-### 4. Get Account Statements List
-
-**Endpoint:** `POST /v2/digital/card/accounts/statements/accountsAndStatements/retrieve`
-
-**Method:** POST
-
-**Headers:** Same as above
-
-**Request Body:**
+**Evidence basis:** Observed: View All Statements and its year filter.
+**Request:** `POST /v2/digital/card/accounts/statements/accountsAndStatements/retrieve`,
+JSON body:
 
 ```json
-{
-  "accountId": "<account-id>"
-}
+{"accountId":"<card-id>"}
 ```
 
-**Request Parameters:**
-
-- `accountId` - The account ID from the eligible accounts API (note: uses `accountId`, not `accountInstanceId`)
-
-**Response Structure:**
+**Context and prerequisites:** selected OP-3 card; pass its account ID unchanged.
+**Response and processing:** HTTP 200 JSON:
 
 ```json
 {
-  "statementsByYear": [
-    {
-      "displayYearTitle": "2000",
-      "annualAccountSummaryEligibleFlag": true,
-      "annualAccountSummaryUrlDetails": {
-        "documentUrl": "/US/ag/spendsummary?accountId=",
-        "documentUrlLabel": "1999 Annual Account Summary"
-      },
-      "statementsByMonth": [
-        {
-          "displayDate": "March 31",
-          "statementDate": "03/31/2000"
-        },
-        {
-          "displayDate": "February 29",
-          "statementDate": "02/29/2000"
-        },
-        {
-          "displayDate": "January 31",
-          "statementDate": "01/31/2000"
-        }
-      ]
-    },
-    {
-      "displayYearTitle": "1999",
-      "annualAccountSummaryEligibleFlag": false,
-      "statementsByMonth": [
-        {
-          "displayDate": "December 31",
-          "statementDate": "12/31/1999"
-        },
-        {
-          "displayDate": "November 30",
-          "statementDate": "11/30/1999"
-        }
-      ]
-    }
-  ],
+  "statementsByYear": [{
+    "displayYearTitle": "2000",
+    "statementsByMonth": [
+      {"displayDate":"March 31","statementDate":"03/31/2000"},
+      {"displayDate":"February 29","statementDate":"02/29/2000"}
+    ],
+    "annualAccountSummaryEligibleFlag": false
+  }],
   "archivedStatementDetails": {
     "archivedStatementsByMonth": [],
     "archivedStatementRequestStartDate": "01/01/2000"
   },
-  "accountOpenDate": "01/01/1999",
   "archivedStatementsEligibleFlag": true,
-  "estatementEnrollmentFlag": true,
-  "accountSubtype": ""
+  "estatementEnrollmentFlag": true
 }
 ```
 
-**Response Fields:**
+**Outputs:** `statementDate` is the exact download selector. Parse its strict
+`MM/DD/YYYY` components, validate the calendar date by round-trip, and represent
+it at UTC midnight for the shared Statement.
+**Selection and association:** flatten monthly entries for the selected account.
+Annual-account-summary URLs and archive-request metadata are separate document
+flows, excluded from the monthly list.
+**Errors and empty results (Code-derived):** reject missing/non-array year/month
+groups and malformed rows/dates. Explicit empty arrays are valid.
+**Pagination and statement coverage:** the response groups available dates by
+year; the UI selects a year from that data. Sort the full monthly list newest
+first. Return only supplied dates, as months without a listed statement need no
+entry. Retention limits and archive-request behavior are Unknown.
 
-- `statementsByYear[]` - Array of statement years
-- `statementsByYear[].displayYearTitle` - Year (e.g., "2025")
-- `statementsByYear[].annualAccountSummaryEligibleFlag` - Whether annual summary is available
-- `statementsByYear[].statementsByMonth[]` - Array of monthly statements
-- `statementsByYear[].statementsByMonth[].displayDate` - Display format (e.g., "July 17")
-- `statementsByYear[].statementsByMonth[].statementDate` - Date in MM/DD/YYYY format (e.g., "07/17/2025")
-- `accountOpenDate` - Date when account was opened
-- `estatementEnrollmentFlag` - Whether enrolled in e-statements
-- `archivedStatementsEligibleFlag` - Whether archived statements can be requested
+### OP-5: Retrieve a monthly PDF
 
-**Note:** This API returns a list of available statement dates grouped by year. To download a specific statement, use the download API with the `statementDate` value.
-
----
-
-### 5. Download Statement PDF
-
-**Endpoint:** `POST /v2/digital/card/accounts/statements/recent/retrieve`
-
-**Method:** POST
-
-**Headers:** Same as above
-
-**Request Body:**
+**Evidence basis:** Observed: recent-statement view and Download use this POST.
+**Request:** `POST /v2/digital/card/accounts/statements/recent/retrieve`, JSON body:
 
 ```json
-{
-  "accountId": "<account-id>",
-  "statementDate": "03/31/2000",
-  "requestType": "RECENT STATEMENTS"
-}
+{"accountId":"<card-id>","statementDate":"03/31/2000","requestType":"RECENT STATEMENTS"}
 ```
 
-**Request Parameters:**
+**Context and prerequisites:** selected OP-4 statement and its OP-3 account.
+Validate the date as in OP-4 before issuing the request; preserve the original
+date string in the body. `requestType` is fixed.
+**Response and processing:** HTTP 200, `Content-Type: application/pdf`, direct
+binary body; the observed Content-Disposition is `attachment; filename=name`.
+**Delivery and outputs:** obtain a Blob from this POST. The account statement
+page at `/US/nga/accstatement?accountInstanceId=...` is the UI entry point;
+OP-5 is the binary document source.
+**Errors and empty results:** report HTTP failures, empty bodies, MIME types
+other than `application/pdf` (case-insensitive, ignoring parameters), and bytes
+without a `%PDF-` prefix as errors.
 
-- `accountId` - The account ID
-- `statementDate` - Statement date in MM/DD/YYYY format (from the statements list API)
-- `requestType` - Fixed value: `"RECENT STATEMENTS"`
+## Shared contract mapping
 
-**Response:** Binary PDF file (Content-Type: application/pdf)
+| Contract field / flow | Source operation and field | Meaning, conversion and runtime checks |
+| --- | --- | --- |
+| Profile.sessionId / profileId | Readable `bcsid` | Module session association; cross-session identity stability is Unknown |
+| Profile.profileName | OP-1 `welcomeData.firstName` | Display name, default `User` |
+| Account.profile / Statement.account | Caller profile / selected OP-3 account | Preserve associations |
+| Account.accountId / accountName | OP-3 ID / nickname | Opaque API selector / displayed name |
+| Account.accountMask / accountType | OP-3 group and nickname | Four-digit suffix and group/name classification |
+| Statement.statementId | OP-4 `statementDate` | Exact `MM/DD/YYYY` string used by OP-5 |
+| Statement.statementDate | OP-4 parsed date | Calendar date at UTC midnight; card PDF prints the closing date as `MM/DD/YY` |
+| Downloaded Blob | OP-5 | Direct bytes with nonempty/MIME/signature checks |
 
-**Response Headers:**
+## Limitations and open questions
 
-- `content-type`: `application/pdf`
-- `content-disposition`: `attachment; filename=name`
-- `content-length`: Size in bytes
-
-**Note:** The URL `https://online.citi.com/US/nga/accstatement?accountInstanceId={accountInstanceId}` returns an HTML page for viewing statements in the browser, not the PDF file directly. To download the PDF, use this POST API instead.
-
----
-
-## API Call Flow
-
-1. **Get Welcome Message** (Optional) - Retrieve user's name and last login info from `/digital/customers/globalSiteMessages/welcomeMessage` (Section 1)
-2. **List Eligible Accounts** - POST to `/v2/digital/accounts/statementsAndLetters/eligibleAccounts/retrieve` with `transactionCode: "1079_statements"` (Section 3)
-   - Extract `accountId` for each eligible account from `eligibleAccounts.cardAccounts[]`
-3. **For Each Account:**
-   - **Get Statements List** - POST to `/v2/digital/card/accounts/statements/accountsAndStatements/retrieve` (Section 4)
-   - **Download PDF** - POST to `/v2/digital/card/accounts/statements/recent/retrieve` with the statement date (Section 5)
-
----
-
-## Implementation Notes
-
-1. **Session Management:** All APIs require valid authenticated session with cookies
-2. **Account ID:** Use `accountId` from eligible accounts API for all statement-related requests
-3. **Date Format:** Statement dates use `MM/DD/YYYY` format (e.g., "07/17/2025")
-4. **PDF Download:** Use POST request to `/v2/digital/card/accounts/statements/recent/retrieve` endpoint
-5. **Error Handling:** API returns standard HTTP status codes; 401/403 indicate authentication issues
-
----
-
-## Security Considerations
-
-- All requests must be made over HTTPS
-- Authorization tokens and session cookies are required for authentication
-- PDF downloads contain sensitive financial information
+- **Untested:** additional cards and bank/loan/investment products. Their account
+  discovery structures alone do not establish applicability of OP-4/OP-5's card
+  routes; those products need their own statement/download evidence.
+- **Unsupported by this flow:** annual summaries and requested archived documents.
+  Their flags/links are metadata, not a substitute for their own retrieval procedure.
+- **Unknown:** minimal required headers, header-default necessity, session expiry/
+  cross-user behavior, retention limits and archive-request lifecycle.
